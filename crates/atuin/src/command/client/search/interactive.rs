@@ -43,6 +43,7 @@ use super::history_list::{HistoryList, ListState};
 use super::inspector::Stats as InspectorStats;
 use super::inspector::bindings::Bindings;
 use super::inspector::browser::{Browser, View as InspectorView};
+use super::whats_new::WhatsNew;
 use crate::VERSION;
 use crate::command::client::halloween::HalloweenExt as _;
 use crate::command::client::search::engines;
@@ -162,6 +163,7 @@ pub struct State {
     /// Total history count; None until the background count query finishes.
     history_count: Option<i64>,
     update_needed: Option<Version>,
+    whats_new: Option<WhatsNew>,
     results_state: ListState,
     switched_search_mode: bool,
     search_mode_state: SearchModeState,
@@ -246,6 +248,14 @@ impl State {
 
     #[must_use]
     fn handle_input(&mut self, settings: &Arc<Settings>, input: &Event) -> InputAction {
+        match input {
+            Event::Key(k)
+                if k.kind == event::KeyEventKind::Release
+                    || matches!(k.code, event::KeyCode::Modifier(_)) => {}
+            Event::Key(_) | Event::Paste(_) => self.whats_new = None,
+            Event::Mouse(m) if m.kind != event::MouseEventKind::Moved => self.whats_new = None,
+            _ => {}
+        }
         match input {
             Event::Key(k) => self.handle_key_input(settings, k),
             Event::Mouse(m) => self.handle_mouse_input(*m, settings),
@@ -950,6 +960,9 @@ impl State {
             f.render_widget(Clear, area);
         }
         self.draw_inner(f, area, results, stats, inspecting, settings, theme);
+        if let Some(whats_new) = &mut self.whats_new {
+            whats_new.draw(f, area, theme);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1969,7 +1982,15 @@ pub async fn history(
     input.end();
 
     let settings2 = Arc::clone(settings);
-    let update_needed = tokio::spawn(async move { settings2.needs_update().await }).fuse();
+    let (whats_new_tx, whats_new) = tokio::sync::oneshot::channel();
+    let mut whats_new = whats_new.fuse();
+    let update_needed = tokio::spawn(async move {
+        // The update check records when it last ran. What's new reads that record to tell a fresh
+        // install from an upgrade, so it has to load first.
+        let _ = whats_new_tx.send(WhatsNew::load(&settings2).await);
+        settings2.needs_update().await
+    })
+    .fuse();
     tokio::pin!(update_needed);
 
     // Counting history is a full table scan, which can take a while on a large,
@@ -1989,6 +2010,7 @@ pub async fn history(
         history_count: None,
         results_state: ListState::default(),
         update_needed: None,
+        whats_new: None,
         switched_search_mode: false,
         tab_index: 0,
         inspecting_state: InspectingState::default(),
@@ -2043,6 +2065,7 @@ pub async fn history(
     let mut stats_for: Option<String> = None;
     let mut inspecting: Option<History> = None;
     let accept;
+    let mut had_input = false;
     let result = 'render: loop {
         if app.tab_index == 1 {
             let context = app.eval_context();
@@ -2059,6 +2082,10 @@ pub async fn history(
             app.draw(f, &results, stats.as_ref(), inspecting.as_ref(), settings, theme, popup_mode);
         })?;
 
+        if let Some(whats_new) = &mut app.whats_new {
+            whats_new.record_if_drawn(settings);
+        }
+
         let initial_input = app.search.input.as_str().to_owned();
         let initial_filter_mode = app.search.filter_mode;
         let initial_search_mode = app.search_mode();
@@ -2069,6 +2096,7 @@ pub async fn history(
         tokio::select! {
             event_ready = event_ready => {
                 if event_ready?? {
+                    had_input = true;
                     loop {
                         match app.handle_input(settings, &event::read()?) {
                             InputAction::Continue => {},
@@ -2179,6 +2207,14 @@ pub async fn history(
                             break;
                         }
                     }
+                }
+            }
+            loaded = &mut whats_new => {
+                // Notes that arrive after the first input would pop up mid-search, so they wait.
+                match loaded {
+                    Ok(Ok(loaded)) if !had_input => app.whats_new = loaded,
+                    Ok(Err(e)) => tracing::warn!("failed to load what's new: {e:#}"),
+                    _ => {}
                 }
             }
             update_needed = &mut update_needed => {
@@ -2461,6 +2497,7 @@ mod tests {
         let mut state = State {
             history_count: Some(i64::try_from(results_len).unwrap()),
             update_needed: None,
+            whats_new: None,
             results_state: ListState::default(),
             switched_search_mode: false,
             search_mode_state: SearchModeState {
