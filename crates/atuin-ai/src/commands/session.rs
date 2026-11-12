@@ -779,8 +779,12 @@ pub enum SelectError {
     NoSessions,
     #[error("no thread with id `{0}`")]
     NotFound(String),
-    #[error("id `{0}` matches more than one thread; use a longer or full id")]
-    Ambiguous(String),
+    /// The id is a prefix of several sessions' ids. `choices` lists them, one per line.
+    #[error("id `{id}` matches more than one thread; use a longer or full id:{choices}")]
+    Ambiguous {
+        id: String,
+        choices: String,
+    },
     /// Several agents' sessions have the id (a session continued in another agent can keep it).
     #[error("id `{id}` names a thread in more than one agent; use its id:{choices}")]
     Shared {
@@ -813,7 +817,10 @@ pub fn select_session(
     match (exact.as_slice(), prefixed.as_slice()) {
         ([one], _) | ([], [one]) => Ok(one.handle.clone()),
         ([], []) => Err(SelectError::NotFound(selector.to_owned())),
-        ([], _) => Err(SelectError::Ambiguous(selector.to_owned())),
+        ([], several) => Err(SelectError::Ambiguous {
+            id: selector.to_owned(),
+            choices: ambiguous_choices(several),
+        }),
         (several, _) => Err(SelectError::Shared {
             id: selector.to_owned(),
             choices: several
@@ -824,6 +831,34 @@ pub fn select_session(
                 .collect(),
         }),
     }
+}
+
+/// The most matches an ambiguous id lists. The rest are counted.
+const MAX_AMBIGUOUS_CHOICES: usize = 10;
+
+/// The most characters of a title that an ambiguous id's list shows.
+const AMBIGUOUS_TITLE_WIDTH: usize = 60;
+
+/// One line for each session an ambiguous id matches, newest first. Each line gives the agent, the
+/// full atuin id, the title and the directory, so the caller can pick one without listing again.
+fn ambiguous_choices(sessions: &[Session]) -> String {
+    let mut sorted: Vec<&Session> = sessions.iter().collect();
+    sorted.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+    let mut out: String = sorted
+        .iter()
+        .take(MAX_AMBIGUOUS_CHOICES)
+        .map(|s| {
+            let title =
+                s.title.as_deref().map(|t| one_line(t, AMBIGUOUS_TITLE_WIDTH)).unwrap_or_default();
+            let cwd = s.cwd.as_deref().map(|c| format!(" in {}", c.display())).unwrap_or_default();
+            format!("\n  {:<12} {}  {title}{cwd}", harness_name(s.handle.harness), s.atuin_id)
+        })
+        .collect();
+    let more = sorted.len().saturating_sub(MAX_AMBIGUOUS_CHOICES);
+    if more > 0 {
+        out.push_str(&format!("\n  …and {more} more"));
+    }
+    out
 }
 
 // --- human rendering ----------------------------------------------------------------------------
@@ -1723,7 +1758,21 @@ mod tests {
     fn ambiguous_prefix_is_an_error() {
         let sessions =
             vec![session(HarnessKind::Codex, "abc111"), session(HarnessKind::ClaudeCode, "abc222")];
-        assert!(select_session(sessions, "abc").is_err());
+        let Err(e) = select_session(sessions, "abc") else {
+            panic!("expected an error");
+        };
+        let e = e.to_string();
+        assert!(e.starts_with("id `abc` matches more than one thread"), "{e}");
+        assert!(e.contains("codex") && e.contains("claude-code"), "{e}");
+    }
+
+    #[rstest]
+    fn ambiguous_prefix_lists_at_most_ten_and_counts_the_rest() {
+        let sessions =
+            (0..12).map(|i| session(HarnessKind::Codex, &format!("abc{i:02}"))).collect();
+        let e = select_session(sessions, "abc").unwrap_err().to_string();
+        assert_eq!(e.lines().count(), 1 + MAX_AMBIGUOUS_CHOICES + 1, "{e}");
+        assert!(e.ends_with("…and 2 more"), "{e}");
     }
 
     #[rstest]
