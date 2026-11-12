@@ -6,6 +6,8 @@ use std::time::{Duration, SystemTime};
 
 use atuin_client::ai_session::{HarnessKind, HarnessSession, NativeSessionId, Session};
 use atuin_common::env;
+use atuin_common::harnesstools::sync::Processes;
+use atuin_common::harnesstools::{AnyHarness, presence};
 use atuin_daemon::AiClient;
 use time::OffsetDateTime;
 
@@ -15,10 +17,14 @@ use time::OffsetDateTime;
 /// directory, which makes the match ambiguous and hides nothing.
 const START_SLACK: Duration = Duration::from_secs(10);
 
-/// Per-server state: when and where the server started.
+/// Per-server state: when and where the server started, and the agent that started it.
 pub struct OwnSession {
     started: SystemTime,
     cwd: Option<PathBuf>,
+    /// The agent's process: the nearest process above this server that is not a shell. An agent
+    /// starts its MCP servers as its own children, and keeps the same process for the server's
+    /// life, so it is looked up once.
+    agent_pid: Option<u32>,
 }
 
 impl Default for OwnSession {
@@ -26,6 +32,7 @@ impl Default for OwnSession {
         Self {
             started: SystemTime::now(),
             cwd: std::env::current_dir().ok(),
+            agent_pid: Processes::here().agent_above(std::process::id()),
         }
     }
 }
@@ -67,9 +74,15 @@ impl Caller<'_> {
         if let Some(own) = self.env_session() {
             return Some(own);
         }
+        let reported = self.reported();
+        if let [only] = reported.as_slice() {
+            return Some(only.clone());
+        }
         // Only a session active since the server started can be the caller's; don't fetch the rest.
         let since = Some(OffsetDateTime::from(self.own.started));
-        self.pick(&super::list_sessions(client, Some(self.harness()?), since).await.ok()?)
+        let harness = self.harness().or_else(|| reported.first().map(|h| h.harness))?;
+        let sessions = super::list_sessions(client, Some(harness), since).await.ok()?;
+        self.choose(&reported, &sessions)
     }
 
     /// The earliest activity a listing needs for [`Self::own_in`] to find the caller's session.
@@ -79,7 +92,44 @@ impl Caller<'_> {
 
     /// [`Self::own_session`] for a caller that already holds the session list.
     pub fn own_in(&self, sessions: &[Session]) -> Option<HarnessSession> {
-        self.env_session().or_else(|| self.pick(sessions))
+        self.env_session().or_else(|| self.choose(&self.reported(), sessions))
+    }
+
+    /// The sessions that the agent which started this server reports open, through its
+    /// lifecycle hooks ([`presence`]). Usually there is one. A Codex app server can hold several
+    /// threads in one process.
+    fn reported(&self) -> Vec<HarnessSession> {
+        let Some(pid) = self.own.agent_pid else {
+            return Vec::new();
+        };
+        let harness = self.harness();
+        presence::live(&Processes::here())
+            .into_iter()
+            .filter(|p| p.pid == pid)
+            .filter_map(|p| {
+                let kind = HarnessKind::from(&AnyHarness::from_name(&p.harness).ok()?);
+                harness.is_none_or(|h| h == kind).then(|| HarnessSession {
+                    harness: kind,
+                    session: NativeSessionId::from(p.session),
+                })
+            })
+            .collect()
+    }
+
+    /// The caller's session, from the sessions its agent `reported` and the captured `sessions`.
+    ///
+    /// One reported session is the caller's. With several, the guess from start time and
+    /// directory ([`Self::pick`]) chooses among them only. With none, it chooses among all.
+    fn choose(&self, reported: &[HarnessSession], sessions: &[Session]) -> Option<HarnessSession> {
+        match reported {
+            [only] => Some(only.clone()),
+            [] => self.pick(sessions),
+            several => {
+                let among: Vec<Session> =
+                    sessions.iter().filter(|s| several.contains(&s.handle)).cloned().collect();
+                self.pick(&among)
+            }
+        }
     }
 
     fn env_session(&self) -> Option<HarnessSession> {
@@ -116,7 +166,7 @@ impl Caller<'_> {
     }
 }
 
-pub(super) fn is_own(s: &Session, own: Option<&HarnessSession>) -> bool {
+pub fn is_own(s: &Session, own: Option<&HarnessSession>) -> bool {
     own == Some(&s.handle)
 }
 
@@ -140,6 +190,7 @@ mod tests {
         OwnSession {
             started,
             cwd: Some(PathBuf::from("/work/p")),
+            agent_pid: None,
         }
     }
 
@@ -158,6 +209,31 @@ mod tests {
             session("mine", "/work/p", now + Duration::from_secs(30)),
         ];
         assert_eq!(caller.pick(&sessions).as_ref().map(id).as_deref(), Some("mine"));
+    }
+
+    #[rstest]
+    fn a_session_its_agent_reports_is_the_callers_whatever_the_guess_says() {
+        let now = SystemTime::now();
+        let own = server(now);
+        let caller = Caller {
+            client: Some("codex-mcp-client"),
+            own: &own,
+        };
+        let hour_ago = now - Duration::from_secs(3600);
+        let sessions = [
+            session("reported", "/work/elsewhere", hour_ago),
+            session("guessed", "/work/p", now + Duration::from_secs(1)),
+            session("also_guessed", "/work/p", now + Duration::from_secs(2)),
+        ];
+        let handle = |s: &Session| s.handle.clone();
+
+        let one = [handle(&sessions[0])];
+        assert_eq!(caller.choose(&one, &sessions).as_ref().map(id).as_deref(), Some("reported"));
+        // Two threads open in one process: the guess picks between them only.
+        let two = [handle(&sessions[0]), handle(&sessions[1])];
+        assert_eq!(caller.choose(&two, &sessions).as_ref().map(id).as_deref(), Some("guessed"));
+        // None reported: the guess alone, which two candidates make ambiguous.
+        assert_eq!(caller.choose(&[], &sessions), None);
     }
 
     #[rstest]

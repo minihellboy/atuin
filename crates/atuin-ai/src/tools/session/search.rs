@@ -15,6 +15,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::caller::{Caller, is_own};
+use super::open::{Open, open_among};
 use super::read::RoleArg;
 use super::{connect, elsewhere_note, one_line, render_session_summary, resolve_cwd};
 use crate::commands::session::HarnessArg;
@@ -163,6 +164,7 @@ impl AtuinThreadsSearchToolCall {
         }
 
         let offset = time::UtcOffset::local_or_utc();
+        let open = open_among(settings, hits.iter().map(|hit| &hit.session)).await;
         let mut out = String::new();
         if any_term {
             let _ = writeln!(
@@ -172,7 +174,8 @@ impl AtuinThreadsSearchToolCall {
             );
         }
         for (index, hit) in hits.iter().enumerate() {
-            SessionHit(hit).render_into(&mut out, index + 1, offset);
+            let state = open.get(&hit.session.handle).copied();
+            SessionHit(hit).render_into(&mut out, index + 1, state, offset);
         }
         if let Some(note) = note {
             let _ = writeln!(out, "\n{note}");
@@ -243,8 +246,14 @@ fn should_loosen(strict: &[SessionMatch], unscoped: Option<&[SessionMatch]>) -> 
 struct SessionHit<'a>(&'a SessionMatch);
 
 impl SessionHit<'_> {
-    fn render_into(&self, out: &mut String, index: usize, offset: time::UtcOffset) {
-        render_session_summary(out, index, &self.0.session, offset);
+    fn render_into(
+        &self,
+        out: &mut String,
+        index: usize,
+        open: Option<Open>,
+        offset: time::UtcOffset,
+    ) {
+        render_session_summary(out, index, &self.0.session, open, offset);
         let preview = one_line(&self.0.preview.to_plain().text, 400);
         if !preview.is_empty() {
             // The message number is in the session holding it, which a grouped search can
@@ -340,7 +349,7 @@ mod tests {
         };
 
         let mut out = String::new();
-        SessionHit(&hit).render_into(&mut out, 1, time::UtcOffset::UTC);
+        SessionHit(&hit).render_into(&mut out, 1, None, time::UtcOffset::UTC);
 
         assert!(out.contains("claude-code"));
         assert!(out.contains(&hit.session.atuin_id.to_string()));
@@ -362,7 +371,7 @@ mod tests {
             ..hit
         };
         let mut out = String::new();
-        SessionHit(&child).render_into(&mut out, 1, time::UtcOffset::UTC);
+        SessionHit(&child).render_into(&mut out, 1, None, time::UtcOffset::UTC);
         assert!(out.contains("message #42 in child-9):"), "{out}");
     }
 }

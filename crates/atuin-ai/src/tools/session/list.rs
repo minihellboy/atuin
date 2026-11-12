@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::caller::{Caller, is_own};
+use super::open::open_among;
 use super::{connect, elsewhere_note, is_subagent, render_session_summary, resolve_cwd};
 use crate::commands::session::HarnessArg;
 use crate::tools::{ToolOutcome, when};
@@ -32,6 +33,10 @@ pub struct AtuinThreadsListToolCall {
     /// Maximum number of sessions to return, newest first.
     #[serde(default)]
     pub limit: Clamped<u32, 1, 50, 10>,
+    /// Only threads that an agent on this machine has open now, such as another Claude Code or
+    /// Codex still running. Threads idle for over a week are not checked.
+    #[serde(default)]
+    pub open: bool,
     /// Include subagent sessions (spawned by another agent session to do part of its work). Off
     /// by default: they are fragments of their parent and usually crowd out the sessions a person
     /// ran. Forks and continuations of a session are always listed, marked with where they came
@@ -82,12 +87,24 @@ impl AtuinThreadsListToolCall {
                     .is_none_or(|root| s.cwd.as_deref().is_some_and(|c| c.starts_with(root)))
             });
         let note = root.as_deref().and_then(|root| elsewhere_note(root, &elsewhere, true, false));
-        sessions.truncate(limit);
+        // With `open`, every thread is checked before the page is cut. Otherwise only the page is.
+        let open = if self.open {
+            let open = open_among(settings, &sessions).await;
+            sessions.retain(|s| open.contains_key(&s.handle));
+            sessions.truncate(limit);
+            open
+        } else {
+            sessions.truncate(limit);
+            open_among(settings, &sessions).await
+        };
 
         if sessions.is_empty() {
             let mut scope = root.map_or_else(String::new, |r| format!(" under {}", r.display()));
             if let Some(since) = since {
                 let _ = write!(scope, " active since {}", super::timestamp(since, offset));
+            }
+            if self.open {
+                scope.push_str(" open in an agent on this machine");
             }
             let note = note.map_or_else(String::new, |n| format!(" {n}"));
             return ToolOutcome::Success(format!(
@@ -98,7 +115,8 @@ impl AtuinThreadsListToolCall {
 
         let mut out = String::new();
         for (index, session) in sessions.iter().enumerate() {
-            render_session_summary(&mut out, index + 1, session, offset);
+            let state = open.get(&session.handle).copied();
+            render_session_summary(&mut out, index + 1, session, state, offset);
         }
         if let Some(note) = note {
             let _ = writeln!(out, "\n{note}");
@@ -120,6 +138,7 @@ mod tests {
         let call: AtuinThreadsListToolCall = serde_json::from_value(json!({})).unwrap();
         assert_eq!(call.limit.get(), 10);
         assert!(!call.include_subagents);
+        assert!(!call.open);
         assert!(call.cwd.is_none());
         assert!(call.since.is_none());
     }

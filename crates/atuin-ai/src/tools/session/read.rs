@@ -18,6 +18,7 @@ use serde_json::Value;
 use strum_macros::IntoStaticStr;
 
 use super::caller::{Caller, is_own};
+use super::open::{Open, open_among};
 use super::{connect, is_subagent, label, link_lines, parent_line, timestamp};
 use crate::commands::session::{SelectError, harness_name, message_role, one_line, select_session};
 use crate::tools::ToolOutcome;
@@ -367,23 +368,27 @@ impl AtuinThreadsReadToolCall {
             Ok(read) => read,
             Err(e) => return ToolOutcome::Error(format!("Reading the thread failed: {e}")),
         };
+        let open = open_among(settings, [&session]).await.get(&session.handle).copied();
         ToolOutcome::Success(self.render(
             &session,
             &messages,
             complete,
             &filter,
+            open,
             time::UtcOffset::local_or_utc(),
         ))
     }
 
     /// Render a page of `messages`: the whole transcript when `complete`, otherwise at least
-    /// everything up to the page and one message with content past it.
+    /// everything up to the page and one message with content past it. A thread that is `open`
+    /// in an agent says so in its header.
     fn render(
         &self,
         s: &Session,
         messages: &[Message],
         complete: bool,
         filter: &Filter,
+        open: Option<Open>,
         offset: time::UtcOffset,
     ) -> String {
         let total = messages.len();
@@ -436,6 +441,14 @@ impl AtuinThreadsReadToolCall {
             timestamp(s.started_at, offset),
             timestamp(s.updated_at, offset),
         );
+        if let Some(open) = open {
+            let _ = writeln!(
+                out,
+                "state    {}. The agent may still be adding to it, so read it again for the \
+                 latest.",
+                open.label()
+            );
+        }
         let _ = writeln!(out);
 
         // `limit` counts messages with something to read, so a stretch of structural rows (a
@@ -929,7 +942,17 @@ mod tests {
 
     fn render_on(args: Value, s: &Session, msgs: &[Message], complete: bool) -> String {
         let call = call(args);
-        call.render(s, msgs, complete, &call.filter(), time::UtcOffset::UTC)
+        call.render(s, msgs, complete, &call.filter(), None, time::UtcOffset::UTC)
+    }
+
+    #[rstest]
+    #[case::open(Some(Open::Now { pid: Some(4242), activity: None }), true)]
+    #[case::closed(None, false)]
+    fn an_open_thread_says_so_in_its_header(#[case] open: Option<Open>, #[case] says: bool) {
+        let call = call(json!({ "session_id": "s" }));
+        let out = call.render(&session(), &[], true, &call.filter(), open, time::UtcOffset::UTC);
+        let line = "state    open now (pid 4242). The agent may still be adding to it";
+        assert_eq!(out.contains(line), says, "{out}");
     }
 
     #[rstest]

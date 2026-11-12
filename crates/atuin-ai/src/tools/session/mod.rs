@@ -3,6 +3,7 @@
 
 pub mod caller;
 pub mod list;
+pub mod open;
 pub mod read;
 pub mod search;
 
@@ -17,10 +18,11 @@ use atuin_common::time::OffsetDateTimeExt;
 use atuin_daemon::AiClient;
 use futures::{StreamExt, TryStreamExt};
 
+use self::open::Open;
 use crate::commands::session::{harness_name, one_line};
 use crate::tools::ToolOutcome;
 
-async fn connect(settings: &Settings) -> Result<AiClient, ToolOutcome> {
+pub async fn connect(settings: &Settings) -> Result<AiClient, ToolOutcome> {
     AiClient::from_settings(settings).await.map_err(|e| {
         ToolOutcome::Error(format!(
             "Threads are unavailable: could not connect to the Atuin daemon ({e}). Shell history \
@@ -163,7 +165,7 @@ fn elsewhere_note<'a>(
 /// session with a parent: forks and continuations have one too, and those are sessions a person
 /// ran. A child of a kind this build does not know (a newer build's) is taken for one, as the
 /// sidecar does.
-fn is_subagent(s: &Session) -> bool {
+pub fn is_subagent(s: &Session) -> bool {
     s.parent.is_some() && matches!(s.parent_kind, Some(ParentKind::Subagent) | None)
 }
 
@@ -210,7 +212,7 @@ fn link_lines(s: &Session) -> Vec<(&'static str, String)> {
 }
 
 /// The session's title, falling back to its opening prompt.
-fn label(s: &Session) -> String {
+pub fn label(s: &Session) -> String {
     s.title
         .as_deref()
         .filter(|t| !t.trim().is_empty())
@@ -225,15 +227,23 @@ fn timestamp(ts: time::OffsetDateTime, offset: time::UtcOffset) -> String {
 
 /// The compact per-session line shared by list and search results:
 /// `[harness] <updated>  <atuin id>  (<n> msgs)` then the directory/branch and title on their own
-/// lines.
-fn render_session_summary(out: &mut String, index: usize, s: &Session, offset: time::UtcOffset) {
+/// lines. A thread that is `open` in an agent ends the first line with that, such as
+/// `open now (pid 4242)`.
+fn render_session_summary(
+    out: &mut String,
+    index: usize,
+    s: &Session,
+    open: Option<Open>,
+    offset: time::UtcOffset,
+) {
     let _ = writeln!(
         out,
-        "{index}. [{}] {}  {}  ({} msgs)",
+        "{index}. [{}] {}  {}  ({} msgs){}",
         harness_name(s.handle.harness),
         timestamp(s.updated_at, offset),
         s.atuin_id,
         s.message_count,
+        open.map(|open| format!("  {}", open.label())).unwrap_or_default(),
     );
     let label = label(s);
     if !label.is_empty() {
@@ -354,7 +364,7 @@ mod tests {
         s.child_atuin_ids = (3..8).map(id).collect();
 
         let mut out = String::new();
-        render_session_summary(&mut out, 1, &s, time::UtcOffset::UTC);
+        render_session_summary(&mut out, 1, &s, None, time::UtcOffset::UTC);
         assert!(out.contains(&format!("   forked from p (atuin id {})\n", id(1))), "{out}");
         assert!(out.contains(&format!("   root {}\n", id(2))), "{out}");
         assert!(
@@ -367,9 +377,23 @@ mod tests {
         s.parent_atuin_id = None;
         s.child_atuin_ids.clear();
         let mut out = String::new();
-        render_session_summary(&mut out, 1, &s, time::UtcOffset::UTC);
+        render_session_summary(&mut out, 1, &s, None, time::UtcOffset::UTC);
         assert!(out.contains("   forked from p\n"), "{out}");
         assert!(!out.contains("root ") && !out.contains("children "), "{out}");
+    }
+
+    #[rstest]
+    #[case::open_now(Some(Open::Now { pid: Some(4242), activity: None }), "  (0 msgs)  open now (pid 4242)\n")]
+    #[case::maybe(Some(Open::Maybe), "  (0 msgs)  may be open\n")]
+    #[case::closed(None, "  (0 msgs)\n")]
+    fn a_summary_ends_its_first_line_with_whether_it_is_open(
+        #[case] open: Option<Open>,
+        #[case] ending: &str,
+    ) {
+        let s = fixtures::session("s", None, time::OffsetDateTime::UNIX_EPOCH);
+        let mut out = String::new();
+        render_session_summary(&mut out, 1, &s, open, time::UtcOffset::UTC);
+        assert!(out.lines().next().is_some_and(|l| format!("{l}\n").ends_with(ending)), "{out}");
     }
 
     #[rstest]
