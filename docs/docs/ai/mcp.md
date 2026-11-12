@@ -239,6 +239,8 @@ Searches your shell history. Commands containing every search term come first, a
 Searches can be narrowed down in a few ways:
 
 - **Filter mode**: the same scopes as [interactive search](../guide/advanced-usage.md) — `global` (the default), `host`, `directory`, `workspace`, or `session`. The `directory` and `workspace` scopes are relative to the directory your MCP client launched the server in, which for most editors is your project directory.
+- **Directory**: `cwd` points the `directory` and `workspace` scopes at another directory. An agent working in one project can then search the commands run in another. Without a scope, `cwd` searches that directory's repository, as `workspace` does.
+- **Time**: `since` and `until` keep only commands run in that window. They take the same forms as the rest of Atuin, such as `today`, `3 hours ago` or `2026-09-01`.
 - **Failed commands only**: return only commands that exited with a non-zero exit code.
 - **Author**: filter to commands you ran yourself, commands run by AI agents, or commands run by one specific agent. See [AI Agent Hooks](../guide/agent-hooks.md) for how Atuin records agent-run commands.
 
@@ -261,6 +263,8 @@ Like `atuin_output`, this needs output capture set up and the daemon running.
 ### `atuin_threads_search`, `atuin_threads_list` and `atuin_threads_read`
 
 Search, list and read your [threads](./threads.md): the sessions of your coding agents (Claude Code, Codex, Copilot, Hermes Agent, Kiro CLI, opencode and pi) that Atuin has captured. An agent can pick up where another left off, or check what was decided last time, without you explaining it again.
+
+Search and list both take `since`, which keeps only threads active at or after that time. A thread counts by when it was last active. Search therefore keeps an old match in a thread that is still in use. If the id given to `atuin_threads_read` is a prefix of several threads, the error lists them, so the agent can pick one.
 
 These need thread capture turned on with `atuin config enable threads`.
 
