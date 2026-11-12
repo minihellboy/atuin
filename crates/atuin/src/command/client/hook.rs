@@ -15,6 +15,7 @@ use tracing::instrument;
 use super::history;
 
 mod event;
+mod presence;
 mod wire;
 
 use event::HookEvent;
@@ -150,6 +151,10 @@ async fn handle(agent_name: &str, settings: &Arc<Settings>) -> Result<()> {
 
     if input.trim().is_empty() {
         return Ok(());
+    }
+    // Hermes's events come from its gateway, which is no session's process.
+    if harness.name() != "hermes" {
+        presence::report(author, &input);
     }
 
     match HookEvent::from_json_str(&input, harness.name())? {

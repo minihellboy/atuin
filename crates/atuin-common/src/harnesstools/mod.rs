@@ -18,6 +18,7 @@ pub mod kiro;
 pub mod mcp;
 pub mod note;
 pub mod opencode;
+pub mod presence;
 pub mod pi;
 pub mod rehydrate;
 pub mod resume;

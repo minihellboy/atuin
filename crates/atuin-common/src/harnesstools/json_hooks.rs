@@ -12,6 +12,12 @@ use super::InstallHookError;
 /// Hook lifecycle events atuin registers itself for.
 const HOOK_EVENT_TYPES: &[&str] = &["PreToolUse", "PostToolUse", "PostToolUseFailure"];
 
+/// The session lifecycle events that Claude Code and Codex both send, which say whether a
+/// session is open and what its agent is doing (see [`super::presence`]). They are registered
+/// with no matcher, so that every one of them runs atuin.
+pub const LIFECYCLE_EVENTS: &[&str] =
+    &["SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "SessionEnd"];
+
 /// How a hook entry tells the harness to run atuin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookStyle {
@@ -35,6 +41,17 @@ pub async fn install(
     install_in(config_path, matcher, harness, HookStyle::Shell, Value::Object(Map::new())).await
 }
 
+/// [`install`], and atuin's hooks for the session lifecycle events `lifecycle` too.
+pub async fn install_with_lifecycle(
+    config_path: &Path,
+    matcher: &str,
+    harness: &str,
+    lifecycle: &[&str],
+) -> Result<(), InstallHookError> {
+    let skeleton = Value::Object(Map::new());
+    install_all(config_path, matcher, harness, HookStyle::Shell, skeleton, lifecycle).await
+}
+
 /// [`install`], into `skeleton` when there is no config at `config_path` yet: what the harness
 /// wants around the hooks (Copilot's `"version": 1`).
 pub async fn install_in(
@@ -43,6 +60,18 @@ pub async fn install_in(
     harness: &str,
     style: HookStyle,
     skeleton: Value,
+) -> Result<(), InstallHookError> {
+    install_all(config_path, matcher, harness, style, skeleton, &[]).await
+}
+
+/// [`install_in`], with hooks for the session lifecycle events `lifecycle`.
+async fn install_all(
+    config_path: &Path,
+    matcher: &str,
+    harness: &str,
+    style: HookStyle,
+    skeleton: Value,
+    lifecycle: &[&str],
 ) -> Result<(), InstallHookError> {
     let hook = hook_entry(&std::env::current_exe()?, harness, style)?;
 
@@ -64,7 +93,9 @@ pub async fn install_in(
         .as_object_mut()
         .ok_or(InstallHookError::Malformed("`hooks` is not an object"))?;
 
-    if !add_hook_entries(hooks, matcher, harness, &hook)? {
+    let tools = add_hook_entries(hooks, matcher, harness, &hook)?;
+    let sessions = add_lifecycle_entries(hooks, lifecycle, harness, &hook)?;
+    if !tools && !sessions {
         return Err(InstallHookError::AlreadyInstalled);
     }
 
@@ -88,35 +119,60 @@ fn add_hook_entries(
 ) -> Result<bool, InstallHookError> {
     let before = hooks.clone();
     for event_type in HOOK_EVENT_TYPES {
-        let entries = hooks
-            .entry(*event_type)
-            .or_insert_with(|| Value::Array(Vec::new()))
-            .as_array_mut()
-            .ok_or(InstallHookError::Malformed("a hook event is not an array"))?;
-
         let installed = json!({
             "matcher": matcher,
             "hooks": [hook],
         });
-        let kept = entries.iter().position(|entry| *entry == installed);
-        for (at, entry) in entries.iter_mut().enumerate() {
-            if Some(at) == kept {
-                continue;
-            }
-            if let Some(entry_hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
-                entry_hooks.retain(|hook| !hook_invokes_atuin(hook, harness));
-            }
-        }
-        entries.retain(|entry| {
-            entry.get("hooks").and_then(Value::as_array).is_none_or(|hooks| !hooks.is_empty())
-        });
-
-        if kept.is_none() {
-            entries.push(installed);
-        }
+        place(hooks, event_type, installed, harness)?;
     }
 
     Ok(*hooks != before)
+}
+
+/// [`add_hook_entries`] for the session lifecycle events `events`, with no matcher.
+fn add_lifecycle_entries(
+    hooks: &mut Map<String, Value>,
+    events: &[&str],
+    harness: &str,
+    hook: &Value,
+) -> Result<bool, InstallHookError> {
+    let before = hooks.clone();
+    for event_type in events {
+        place(hooks, event_type, json!({ "hooks": [hook] }), harness)?;
+    }
+    Ok(*hooks != before)
+}
+
+/// Make `installed` the only entry of `event_type` that runs atuin for `harness`.
+fn place(
+    hooks: &mut Map<String, Value>,
+    event_type: &str,
+    installed: Value,
+    harness: &str,
+) -> Result<(), InstallHookError> {
+    let entries = hooks
+        .entry(event_type)
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or(InstallHookError::Malformed("a hook event is not an array"))?;
+
+    let kept = entries.iter().position(|entry| *entry == installed);
+    for (at, entry) in entries.iter_mut().enumerate() {
+        if Some(at) == kept {
+            continue;
+        }
+        if let Some(entry_hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+            entry_hooks.retain(|hook| !hook_invokes_atuin(hook, harness));
+        }
+    }
+    entries.retain(|entry| {
+        entry.get("hooks").and_then(Value::as_array).is_none_or(|hooks| !hooks.is_empty())
+    });
+
+    if kept.is_none() {
+        entries.push(installed);
+    }
+    Ok(())
 }
 
 /// Build the hook entry that runs `atuin hook <harness>` through `executable`.
@@ -282,6 +338,16 @@ mod tests {
     }
 
     /// Installed again, atuin's entry stays where it is, ahead of the user's added since.
+    #[rstest]
+    fn lifecycle_entries_have_no_matcher_and_are_added_once() {
+        let hook = json!({"type": "command", "command": "/bin/atuin hook codex"});
+        let mut hooks = Map::new();
+
+        assert!(add_lifecycle_entries(&mut hooks, &["Stop"], "codex", &hook).unwrap());
+        assert!(!add_lifecycle_entries(&mut hooks, &["Stop"], "codex", &hook).unwrap());
+        assert_eq!(Value::Object(hooks), json!({"Stop": [{"hooks": [hook]}]}));
+    }
+
     #[rstest]
     fn add_hook_entries_keeps_an_installed_entry_in_place() {
         let command = "/opt/atuin/bin/atuin hook codex";

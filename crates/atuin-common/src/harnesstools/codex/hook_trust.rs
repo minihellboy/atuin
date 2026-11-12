@@ -17,8 +17,20 @@ use crate::harnesstools::InstallHookError;
 use crate::harnesstools::json_hooks::invokes_atuin_hook;
 use crate::path::{AbsPathBuf, PathBufExt as _};
 
-/// The events Codex runs atuin's hooks for, as `hooks.json` and the trust key name them.
-const EVENTS: &[(&str, &str)] = &[("PreToolUse", "pre_tool_use"), ("PostToolUse", "post_tool_use")];
+/// The events Codex runs atuin's hooks for, as `hooks.json` and the trust key name them, each
+/// with the timeout in seconds that Codex gives a hook of that event when it names none.
+///
+/// Codex hashes the timeout with the hook. It gives `SessionEnd` hooks 1 second (codex 0.167.2),
+/// and every other event 600.
+const EVENTS: &[(&str, &str, u64)] = &[
+    ("PreToolUse", "pre_tool_use", 600),
+    ("PostToolUse", "post_tool_use", 600),
+    ("SessionStart", "session_start", 600),
+    ("UserPromptSubmit", "user_prompt_submit", 600),
+    ("Stop", "stop", 600),
+    ("PermissionRequest", "permission_request", 600),
+    ("SessionEnd", "session_end", 1),
+];
 
 /// Codex's `config.toml`, read before anything is installed, so a config atuin can't record
 /// trust in leaves nothing half done.
@@ -95,7 +107,7 @@ fn implicit() -> Item {
 /// place in it), and the hash Codex trusts it by.
 fn atuin_hooks(hooks: &Value, harness: &str) -> Vec<(&'static str, usize, usize, String)> {
     let mut found = Vec::new();
-    for (event, key) in EVENTS {
+    for (event, key, timeout) in EVENTS {
         let Some(groups) = hooks["hooks"][event].as_array() else {
             continue;
         };
@@ -109,7 +121,7 @@ fn atuin_hooks(hooks: &Value, harness: &str) -> Vec<(&'static str, usize, usize,
                 };
                 let installed = *handler == json!({"type": "command", "command": command});
                 if installed && invokes_atuin_hook(command, harness) {
-                    found.push((*key, g, h, hash(key, &group["matcher"], command)));
+                    found.push((*key, g, h, hash(key, &group["matcher"], command, *timeout)));
                 }
             }
         }
@@ -119,12 +131,17 @@ fn atuin_hooks(hooks: &Value, harness: &str) -> Vec<(&'static str, usize, usize,
 
 /// What Codex trusts a hook by: the SHA-256 of the JSON of its event, matcher and handler (its
 /// defaults filled in), keys sorted.
-fn hash(event: &str, matcher: &Value, command: &str) -> String {
-    let hook = json!({
+///
+/// A group with no matcher, as the session lifecycle events have, is hashed without the key.
+/// Codex 0.167.2 leaves it out rather than writing `null`.
+fn hash(event: &str, matcher: &Value, command: &str, timeout: u64) -> String {
+    let mut hook = json!({
         "event_name": event,
-        "hooks": [{"async": false, "command": command, "timeout": 600, "type": "command"}],
-        "matcher": matcher,
+        "hooks": [{"async": false, "command": command, "timeout": timeout, "type": "command"}],
     });
+    if !matcher.is_null() {
+        hook["matcher"] = matcher.clone();
+    }
     format!("sha256:{:x}", Sha256::digest(hook.to_string()))
 }
 
@@ -139,6 +156,40 @@ mod tests {
     /// The hashes codex 0.160.1 itself gave these hooks, as its app server's `hooks/list`
     /// reported them for a `hooks.json` holding them (`currentHash`): of the command a dev build
     /// installed, and of [`COMMAND`].
+    /// The hashes codex 0.167.2's app server gave the lifecycle hooks, which have no matcher,
+    /// as `hooks/list` reported them for a `hooks.json` holding them (`currentHash`).
+    #[rstest]
+    #[case::session_start(
+        "session_start",
+        600,
+        "c8b3e20b27be155022e66086e4bb32e91d3505ee1a0a89127d20ea942550651c"
+    )]
+    #[case::user_prompt_submit(
+        "user_prompt_submit",
+        600,
+        "e77fc673550ea474feaadc440987319d92c6160b0fcdead434f300bb3f983787"
+    )]
+    #[case::stop("stop", 600, "98a04e0ef3ab08e9e45a0cc31976bc8b683d4b7ada863039b2ae982074861c2b")]
+    #[case::permission_request(
+        "permission_request",
+        600,
+        "005305b8b5d9093474f41312344695548b0c5b4b3c400275a0776a211bc12445"
+    )]
+    #[case::session_end(
+        "session_end",
+        1,
+        "81af3b40eb14a626ffbe32fb2005e14c456ebd270ef2766c724b8837fe5363d4"
+    )]
+    fn a_hook_without_a_matcher_is_hashed_as_codex_hashes_it(
+        #[case] event: &str,
+        #[case] timeout: u64,
+        #[case] expected: &str,
+    ) {
+        let expected = format!("sha256:{expected}");
+        assert_eq!(hash(event, &Value::Null, COMMAND, timeout), expected);
+        assert!(EVENTS.iter().any(|(_, key, t)| *key == event && *t == timeout));
+    }
+
     #[rstest]
     #[case::pre_dev(
         "pre_tool_use",
@@ -163,7 +214,7 @@ mod tests {
         "sha256:274cc2128367ee69da364e7677ebe7489cc8f29de94635225f2e40735e09e642"
     )]
     fn hashes_are_codexs(#[case] event: &str, #[case] command: &str, #[case] expected: &str) {
-        assert_eq!(hash(event, &json!("^Bash$"), command), expected);
+        assert_eq!(hash(event, &json!("^Bash$"), command, 600), expected);
     }
 
     fn installed() -> Value {
@@ -203,11 +254,11 @@ mod tests {
         pretty_assertions::assert_eq!(trusted, [
             (
                 format!("{}:pre_tool_use:1:0", path.display()),
-                hash("pre_tool_use", &json!("^Bash$"), COMMAND)
+                hash("pre_tool_use", &json!("^Bash$"), COMMAND, 600)
             ),
             (
                 format!("{}:post_tool_use:0:0", path.display()),
-                hash("post_tool_use", &json!("^Bash$"), COMMAND)
+                hash("post_tool_use", &json!("^Bash$"), COMMAND, 600)
             ),
         ]);
         assert!(text.starts_with(before.lines().next().unwrap()), "{text}");

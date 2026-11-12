@@ -50,7 +50,15 @@ impl Harness for Codex {
         let home = home();
         let config_path = home.join("hooks.json");
         let config = hook_trust::config(&home).await?;
-        let installed = match json_hooks::install(&config_path, "^Bash$", self.name()).await {
+        let lifecycle = json_hooks::LIFECYCLE_EVENTS;
+        let installed = match json_hooks::install_with_lifecycle(
+            &config_path,
+            "^Bash$",
+            self.name(),
+            lifecycle,
+        )
+        .await
+        {
             Ok(()) => true,
             Err(InstallHookError::AlreadyInstalled) => false,
             Err(err) => return Err(err),

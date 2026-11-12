@@ -60,6 +60,14 @@ The hook lifecycle:
 
 Atuin only captures shell tool invocations (`Bash`, Kiro's `execute_bash`, or Hermes's `terminal`). It ignores other tool types (file writes, web fetches, etc.).
 
+### Open sessions
+
+For Claude Code and Codex, the install also registers Atuin for the session lifecycle events. These are `SessionStart`, `UserPromptSubmit`, `Stop`, `PermissionRequest` and `SessionEnd`, and for Claude Code `Notification` too. With them, Atuin knows which sessions each agent has open, and whether the agent is working, idle, or waiting for you to answer it. The [threads tools](../ai/mcp.md#atuin_threads_search-atuin_threads_list-and-atuin_threads_read) show this, so an agent can see what your other agents are doing.
+
+Atuin keeps one small file per open session under `$XDG_RUNTIME_DIR/atuin/agents` (or a directory of yours under the temporary directory). Each file names the agent's process. A file whose process has exited is removed the next time it is read, so a crashed agent never shows as open. The hook prints nothing, so it adds nothing to the agent's context.
+
+If you installed the hooks with an earlier version of Atuin, run `atuin hook install` again to add the lifecycle events.
+
 Agents that load extensions rather than shelling out to a hook command -- opencode and pi -- call `atuin history start` and `atuin history end` directly instead, but record the same thing. Hermes loads a plugin too, which passes Hermes's own events to `atuin hook hermes`.
 
 ## Filtering by Author
