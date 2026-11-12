@@ -183,9 +183,7 @@ async fn a_thread_codex_holds_is_left_alone(dir: TempDir) {
     assert!(matches!(err, SyncError::Live(None)), "{err:?}");
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let procs = procs(dir.path(), &[]);
-    assert_eq!(liveness(dir.path(), &thread, &procs, &Seen::default()), Liveness::Live {
-        pid: None
-    });
+    assert_eq!(liveness(dir.path(), &thread, &procs, Seen::default), Liveness::Live { pid: None });
 }
 
 #[rstest]
@@ -378,7 +376,7 @@ fn liveness_is_the_writer_lock_or_any_codex(
     } else {
         expected
     };
-    assert_eq!(liveness(dir.path(), thread, &procs, &Seen::default()), expected);
+    assert_eq!(liveness(dir.path(), thread, &procs, Seen::default), expected);
 }
 
 /// Without locks, a Codex counts only where the session works.
@@ -395,7 +393,10 @@ fn without_locks_a_codex_counts_where_the_session_works(
         ..entry(3, "codex", &["codex"], 1)
     }]);
     let thread = "01a0d14f-e276-77d3-b955-89d5b0151306";
-    assert_eq!(liveness(dir.path(), thread, &procs, &cwd(Some(dir.path().join("proj")))), expected);
+    assert_eq!(
+        liveness(dir.path(), thread, &procs, || cwd(Some(dir.path().join("proj")))),
+        expected
+    );
 }
 
 /// Without locks, a Codex working elsewhere may have the thread loaded from there (`codex resume
@@ -434,7 +435,7 @@ async fn without_locks_a_codex_elsewhere_counts_when_named_or_writing(
         ..entry(3, "codex", cmd, 1)
     }]);
     let seen = appending(&base, &thread, Some(&dir.path().join("proj")));
-    assert_eq!(liveness(dir.path(), &thread, &procs, &seen), expected);
+    assert_eq!(liveness(dir.path(), &thread, &procs, || seen), expected);
 }
 
 /// What a switch would refuse whatever the branch is known from the copy alone, so none is

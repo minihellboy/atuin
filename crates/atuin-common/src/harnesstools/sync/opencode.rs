@@ -54,9 +54,9 @@ impl SessionSync for Opencode {
         local_tip_in(&db, id).await
     }
 
-    async fn is_live(&self, id: &str, cwd: Option<&Path>) -> Liveness {
+    async fn is_live_among(&self, id: &str, cwd: Option<&Path>, procs: &Processes) -> Liveness {
         let db = default_db().filter(|db| db.is_file());
-        liveness_in(db.as_deref(), id, Processes::here(), cwd).await
+        liveness_in(db.as_deref(), id, procs.clone(), cwd).await
     }
 
     async fn append(

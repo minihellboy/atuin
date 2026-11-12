@@ -55,14 +55,13 @@ impl SessionSync for Hermes {
         local_tip_in(&db, id).await
     }
 
-    async fn is_live(&self, id: &str, _cwd: Option<&Path>) -> Liveness {
+    async fn is_live_among(&self, id: &str, _cwd: Option<&Path>, procs: &Processes) -> Liveness {
         let Some(db) = session::locate(&hermes_home(), id).await else {
             return Liveness::NotLive;
         };
         let registry = db.with_file_name("runtime").joined(REGISTRY_FILE);
-        let of = id.to_owned();
-        let claimed =
-            blocking_liveness(move || registry_holder(&registry, &of, &Processes::here())).await;
+        let (of, procs) = (id.to_owned(), procs.clone());
+        let claimed = blocking_liveness(move || registry_holder(&registry, &of, &procs)).await;
         match claimed {
             Liveness::Live { .. } => claimed,
             Liveness::NotLive => liveness_in(&db, id, SystemTime::now()).await,

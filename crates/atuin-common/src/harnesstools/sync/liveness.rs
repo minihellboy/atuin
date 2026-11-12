@@ -28,6 +28,7 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use crate::path::AbsPathBuf;
@@ -69,6 +70,12 @@ pub enum Processes {
     Table(Vec<TableEntry>),
     /// None can be read on this platform.
     Unavailable,
+    /// The processes of `source`, listed at most once ([`Processes::listed`]). The list is read
+    /// when it is first needed. `None` in it means they could not be listed.
+    Listed {
+        source: Box<Self>,
+        processes: Arc<OnceLock<Option<Vec<ProcessInfo>>>>,
+    },
 }
 
 /// One process as `sysinfo` reads it, before it is taken for a [`ProcessInfo`] or a
@@ -84,10 +91,13 @@ pub struct TableEntry {
     pub zombie: bool,
     /// Its working directory, `None` (or empty) when it can't be read.
     pub cwd: Option<PathBuf>,
+    /// The process that started it, when that can be read.
+    pub parent: Option<u32>,
 }
 
 /// When a process started.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Start {
     /// Linux: the `starttime` field of `/proc/<pid>/stat` (clock ticks after boot), as written
     /// there and as Claude Code records it.
@@ -115,14 +125,83 @@ impl Processes {
         }
     }
 
+    /// These processes, listed at most once and kept.
+    ///
+    /// Checking many sessions against the result reads every process only once. The list is read
+    /// when [`Self::list`] is first called, and clones share it. [`Self::running`] still reads the
+    /// process it is asked about.
+    #[must_use]
+    pub fn listed(self) -> Self {
+        Self::Listed {
+            source: Box::new(self),
+            processes: Arc::default(),
+        }
+    }
+
+    /// The `proc` filesystem these processes are read from, if they are.
+    fn proc_root(&self) -> Option<&Path> {
+        match self {
+            Self::ProcFs(root) => Some(root),
+            Self::Listed { source, .. } => source.proc_root(),
+            Self::System | Self::Table(_) | Self::Unavailable => None,
+        }
+    }
+
     /// Every process that can be seen; `Err` when they can't be read.
     pub fn list(&self) -> io::Result<Vec<ProcessInfo>> {
         match self {
+            Self::Listed { source, processes } => processes
+                .get_or_init(|| source.list().ok())
+                .clone()
+                .ok_or_else(|| io::Error::other("the processes could not be listed")),
             Self::ProcFs(root) => list_proc_fs(root),
             Self::System => Ok(read_table(None)?.iter().filter_map(TableEntry::info).collect()),
             Self::Table(table) => Ok(table.iter().filter_map(TableEntry::info).collect()),
             Self::Unavailable => Err(io::Error::from(io::ErrorKind::Unsupported)),
         }
+    }
+
+    /// Process `pid`, as much of it as can be read; `None` when it is not running or can't be
+    /// read at all.
+    #[must_use]
+    pub fn process(&self, pid: u32) -> Option<ProcessInfo> {
+        match self {
+            Self::ProcFs(root) => proc_info(&root.join(pid.to_string()), pid),
+            Self::System => read_table(Some(pid)).ok()?.iter().find(|e| e.pid == pid)?.info(),
+            Self::Table(table) => table.iter().find(|e| e.pid == pid)?.info(),
+            Self::Listed { source, .. } => source.process(pid),
+            Self::Unavailable => None,
+        }
+    }
+
+    /// The process that started process `pid`; `None` when that can't be read.
+    #[must_use]
+    pub fn parent(&self, pid: u32) -> Option<u32> {
+        match self {
+            Self::ProcFs(root) => proc_stat(&root.join(pid.to_string())).ok()??.parent,
+            Self::System => read_table(Some(pid)).ok()?.iter().find(|e| e.pid == pid)?.parent,
+            Self::Table(table) => table.iter().find(|e| e.pid == pid)?.parent,
+            Self::Listed { source, .. } => source.parent(pid),
+            Self::Unavailable => None,
+        }
+    }
+
+    /// The agent that process `pid` was started for: the nearest process above it that is not a
+    /// shell or a launcher such as `env`.
+    ///
+    /// An agent runs its hooks and its MCP servers as its own children, though often through a
+    /// shell (`sh -c '<hook>'`). `None` when no such process is found within eight steps.
+    #[must_use]
+    pub fn agent_above(&self, pid: u32) -> Option<u32> {
+        let mut at = pid;
+        for _ in 0..ANCESTRY_LIMIT {
+            at = self.parent(at).filter(|parent| *parent > 1)?;
+            let process = self.process(at)?;
+            if !is_launcher(&process) {
+                return Some(at);
+            }
+        }
+        None
     }
 
     /// Process `pid`, if it is running; `Err` when that can't be told: only a process that is
@@ -150,6 +229,7 @@ impl Processes {
                 Ok(table.iter().find(|e| e.pid == pid).and_then(TableEntry::running))
             }
             Self::Unavailable => Err(io::Error::from(io::ErrorKind::Unsupported)),
+            Self::Listed { source, .. } => source.running(pid),
         }
     }
 }
@@ -210,6 +290,7 @@ fn read_table(pid: Option<u32>) -> io::Result<Vec<TableEntry>> {
             start_time: p.start_time(),
             zombie: p.status() == ProcessStatus::Zombie,
             cwd: p.cwd().map(Path::to_path_buf),
+            parent: p.parent().map(sysinfo::Pid::as_u32),
         })
         .collect())
 }
@@ -236,32 +317,38 @@ fn list_proc_fs(root: &Path) -> io::Result<Vec<ProcessInfo>> {
         let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
             continue;
         };
-        let dir = entry.path();
-        // A process that exits while it is read is simply not there; one that is there but
-        // can't be read is kept, unread.
-        let argv = match std::fs::read(dir.join("cmdline")) {
-            Ok(cmdline) => Some(split_cmdline(&cmdline)),
-            Err(err) if gone(&err) => continue,
-            Err(_) => None,
-        };
-        let name = match std::fs::read_to_string(dir.join("comm")) {
-            Ok(name) => Some(name.trim_end().to_owned()),
-            Err(err) if gone(&err) => continue,
-            Err(_) => None,
-        };
-        match proc_stat(&dir) {
-            Ok(Some(stat)) if stat.zombie => continue,
-            Err(err) if gone(&err) => continue,
-            _ => {}
-        }
-        out.push(ProcessInfo {
-            pid,
-            argv,
-            name,
-            cwd: proc_cwd(&dir),
-        });
+        out.extend(proc_info(&entry.path(), pid));
     }
     Ok(out)
+}
+
+/// Process `pid`, read from its directory `dir` of a `proc` filesystem. `None` when it is not
+/// there, or is a zombie.
+///
+/// A process that exits while it is read is simply not there. One that is there but can't be
+/// read is kept, unread.
+fn proc_info(dir: &Path, pid: u32) -> Option<ProcessInfo> {
+    let argv = match std::fs::read(dir.join("cmdline")) {
+        Ok(cmdline) => Some(split_cmdline(&cmdline)),
+        Err(err) if gone(&err) => return None,
+        Err(_) => None,
+    };
+    let name = match std::fs::read_to_string(dir.join("comm")) {
+        Ok(name) => Some(name.trim_end().to_owned()),
+        Err(err) if gone(&err) => return None,
+        Err(_) => None,
+    };
+    match proc_stat(dir) {
+        Ok(Some(stat)) if stat.zombie => return None,
+        Err(err) if gone(&err) => return None,
+        _ => {}
+    }
+    Some(ProcessInfo {
+        pid,
+        argv,
+        name,
+        cwd: proc_cwd(dir),
+    })
 }
 
 /// `<dir>/cwd`, the process's working directory; `None` when it can't be read (another user's
@@ -278,6 +365,35 @@ fn proc_cwd(dir: &Path) -> Option<PathBuf> {
     }
 }
 
+/// How many processes [`Processes::agent_above`] climbs before it gives up.
+const ANCESTRY_LIMIT: usize = 8;
+
+/// Programs that run another program for an agent, and so are never the agent themselves.
+const LAUNCHERS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "nu",
+    "env",
+    "timeout",
+    "nice",
+    "nohup",
+    "cmd",
+    "powershell",
+    "pwsh",
+];
+
+/// Whether `process` is a shell or a launcher ([`LAUNCHERS`]), by its program or its name.
+fn is_launcher(process: &ProcessInfo) -> bool {
+    let program = process.argv.as_ref().and_then(|argv| argv.first()).map(|a| program_name(a));
+    // A login shell names itself with a leading dash (`-zsh`).
+    let names = [program, process.name.as_deref()];
+    names.into_iter().flatten().any(|name| LAUNCHERS.contains(&name.trim_start_matches('-')))
+}
+
 /// Whether reading a process failed because it is not there: it never was, or it has exited.
 fn gone(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::NotFound
@@ -285,6 +401,8 @@ fn gone(err: &io::Error) -> bool {
 
 struct Stat {
     zombie: bool,
+    /// The process that started it (field 4).
+    parent: Option<u32>,
     start: Option<String>,
 }
 
@@ -296,6 +414,7 @@ fn proc_stat(dir: &Path) -> io::Result<Option<Stat>> {
         let fields: Vec<&str> = stat[at + 1..].split_whitespace().collect();
         Stat {
             zombie: fields.first() == Some(&"Z"),
+            parent: fields.get(1).and_then(|s| s.parse().ok()),
             start: fields.get(19).map(|s| (*s).to_owned()),
         }
     }))
@@ -489,9 +608,7 @@ pub fn flock_holder(lock: &Path, procs: &Processes) -> Liveness {
 #[cfg(unix)]
 fn lock_owner(file: &File, procs: &Processes) -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
-    let Processes::ProcFs(root) = procs else {
-        return None;
-    };
+    let root = procs.proc_root()?;
     let inode = file.metadata().ok()?.ino();
     let locks = std::fs::read_to_string(root.join("locks")).ok()?;
     locks.lines().find_map(|line| {

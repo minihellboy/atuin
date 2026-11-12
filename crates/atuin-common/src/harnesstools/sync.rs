@@ -222,7 +222,21 @@ pub trait SessionSync {
     /// Whether a harness process on this machine may be writing session `id`, last seen working
     /// in `cwd`. [`Liveness::Unknown`] is to be taken as live.
     #[allow(async_fn_in_trait)]
-    async fn is_live(&self, id: &str, cwd: Option<&Path>) -> Liveness;
+    async fn is_live(&self, id: &str, cwd: Option<&Path>) -> Liveness {
+        self.is_live_among(id, cwd, &Processes::here()).await
+    }
+
+    /// [`Self::is_live`], told from the processes `procs`.
+    ///
+    /// A caller that checks many sessions passes [`Processes::listed`], so that every process is
+    /// read only once.
+    #[allow(async_fn_in_trait)]
+    async fn is_live_among(
+        &self,
+        id: &str,
+        cwd: Option<&Path>,
+        procs: &crate::harnesstools::sync::Processes,
+    ) -> Liveness;
 
     /// Append `lines` (root to head, the first hanging from the tip `base` read, each after it
     /// from the tip or a row before it) to session `id`'s transcript, so the harness resumes from

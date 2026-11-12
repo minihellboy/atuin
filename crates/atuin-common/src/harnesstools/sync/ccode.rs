@@ -63,13 +63,11 @@ impl SessionSync for Ccode {
         blocking(move || locate(&root, &id).map(|path| read_tip(&path)).transpose()).await
     }
 
-    async fn is_live(&self, id: &str, _cwd: Option<&Path>) -> Liveness {
-        let (sessions, id) = (sessions_dir(), id.to_owned());
-        tokio::task::spawn_blocking(move || {
-            liveness(&sessions, &id, &Processes::here(), &pid_domain())
-        })
-        .await
-        .unwrap_or(Liveness::Unknown)
+    async fn is_live_among(&self, id: &str, _cwd: Option<&Path>, procs: &Processes) -> Liveness {
+        let (sessions, id, procs) = (sessions_dir(), id.to_owned(), procs.clone());
+        tokio::task::spawn_blocking(move || liveness(&sessions, &id, &procs, &pid_domain()))
+            .await
+            .unwrap_or(Liveness::Unknown)
     }
 
     async fn append(

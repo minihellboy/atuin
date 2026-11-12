@@ -61,20 +61,25 @@ impl SessionSync for Codex {
         local_tip_in(&crate::harnesstools::codex::home(), id).await
     }
 
-    async fn is_live(&self, id: &str, cwd: Option<&Path>) -> Liveness {
+    async fn is_live_among(&self, id: &str, cwd: Option<&Path>, procs: &Processes) -> Liveness {
         let (home, id, cwd) =
             (crate::harnesstools::codex::home(), id.to_owned(), cwd.map(Path::to_path_buf));
+        let procs = procs.clone();
         blocking_liveness(move || {
             let thread = resume_id(&id);
-            let newest = is_plain_name(thread)
-                .then(|| rollouts_of(&home.join("sessions"), thread).pop())
-                .flatten();
-            let seen = Seen {
-                dirs: Dirs::of(cwd),
-                names: vec![thread.to_owned()],
-                changing: newest.is_some_and(|path| changed_lately(modified(&path))),
+            // Finding the newest rollout reads every rollout file, so it is only done when no
+            // lock answers.
+            let seen = || {
+                let newest = is_plain_name(thread)
+                    .then(|| rollouts_of(&home.join("sessions"), thread).pop())
+                    .flatten();
+                Seen {
+                    dirs: Dirs::of(cwd),
+                    names: vec![thread.to_owned()],
+                    changing: newest.is_some_and(|path| changed_lately(modified(&path))),
+                }
             };
-            liveness(&home, &id, &Processes::here(), &seen)
+            liveness(&home, &id, &procs, seen)
         })
         .await
     }
@@ -90,7 +95,7 @@ impl SessionSync for Codex {
         let seen = appending(base, &thread, options.cwd);
         let (at, of) = (home.clone(), id.to_owned());
         require_idle(
-            blocking_liveness(move || liveness(&at, &of, &Processes::here(), &seen)).await,
+            blocking_liveness(move || liveness(&at, &of, &Processes::here(), || seen)).await,
         )?;
         let (base, lines, taken) = (base.clone(), lines.to_vec(), options.taken_ids.cloned());
         blocking(move || append_in(&home, &thread, &base, &lines, taken.as_ref())).await
@@ -108,7 +113,7 @@ impl SessionSync for Codex {
         let seen = appending(base, &thread, options.cwd);
         let (at, of) = (home.clone(), id.to_owned());
         require_idle(
-            blocking_liveness(move || liveness(&at, &of, &Processes::here(), &seen)).await,
+            blocking_liveness(move || liveness(&at, &of, &Processes::here(), || seen)).await,
         )?;
         replace_in(&home, id, base, branch, options.taken_ids, backups).await
     }
@@ -123,20 +128,28 @@ fn appending(base: &LocalTip, thread: &str, cwd: Option<&Path>) -> Seen {
     base.seen(cwd, vec![thread.to_owned()])
 }
 
-/// Whether a Codex process has session `id` (a thread, or a segment of one, as `seen`) loaded.
-pub(super) fn liveness(home: &Path, id: &str, procs: &Processes, seen: &Seen) -> Liveness {
+/// Whether a Codex process has session `id` (a thread, or a segment of one, as `seen` returns
+/// it) loaded.
+///
+/// `seen` is only called when the thread's writer lock can't answer.
+pub(super) fn liveness(
+    home: &Path,
+    id: &str,
+    procs: &Processes,
+    seen: impl FnOnce() -> Seen,
+) -> Liveness {
     let thread = resume_id(id);
     if !is_plain_name(thread) {
         return Liveness::NotLive;
     }
     let locks = home.join(LOCKS);
     if !locks.is_dir() {
-        return agent_running(procs, "codex", &[], seen);
+        return agent_running(procs, "codex", &[], &seen());
     }
     match flock_holder(&locks.joined(format!("{thread}.lock")), procs) {
         // Whether Codex on Windows holds the lock as it does elsewhere is unconfirmed: a lock
         // nothing holds there says no more than the processes do.
-        Liveness::NotLive if cfg!(windows) => agent_running(procs, "codex", &[], seen),
+        Liveness::NotLive if cfg!(windows) => agent_running(procs, "codex", &[], &seen()),
         liveness => liveness,
     }
 }

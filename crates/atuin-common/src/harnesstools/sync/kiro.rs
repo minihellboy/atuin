@@ -60,11 +60,11 @@ impl SessionSync for Kiro {
         blocking(move || locate(&root, &id).map(|path| read_tip(&path)).transpose()).await
     }
 
-    async fn is_live(&self, id: &str, cwd: Option<&Path>) -> Liveness {
+    async fn is_live_among(&self, id: &str, cwd: Option<&Path>, procs: &Processes) -> Liveness {
         let root = default_root();
-        let (id, cwd) = (id.to_owned(), cwd.map(Path::to_path_buf));
+        let (id, cwd, procs) = (id.to_owned(), cwd.map(Path::to_path_buf), procs.clone());
         blocking_liveness(move || match session_dir(&root, &id) {
-            Some(dir) => liveness(&dir, &id, cwd.as_deref(), &Processes::here()),
+            Some(dir) => liveness(&dir, &id, cwd.as_deref(), &procs),
             None => Liveness::NotLive,
         })
         .await

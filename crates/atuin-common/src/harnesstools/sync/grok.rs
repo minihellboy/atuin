@@ -33,8 +33,9 @@ impl SessionSync for Grok {
         .await
     }
 
-    async fn is_live(&self, id: &str, cwd: Option<&Path>) -> Liveness {
+    async fn is_live_among(&self, id: &str, cwd: Option<&Path>, procs: &Processes) -> Liveness {
         let (root, id, cwd) = (default_root(), id.to_owned(), cwd.map(Path::to_path_buf));
+        let procs = procs.clone();
         blocking_liveness(move || {
             let file = locate(&root, &id);
             let seen = Seen {
@@ -42,7 +43,7 @@ impl SessionSync for Grok {
                 changing: file.as_deref().is_some_and(|f| changed_lately(modified(f))),
                 names: vec![id],
             };
-            liveness(&Processes::here(), &seen)
+            liveness(&procs, &seen)
         })
         .await
     }

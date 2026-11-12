@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use super::{
-    AppendOptions, AppendOutcome, Liveness, LocalTip, ReplaceOutcome, SessionSync, SyncError,
+    AppendOptions, AppendOutcome, Liveness, LocalTip, Processes, ReplaceOutcome, SessionSync,
+    SyncError,
 };
 use crate::harnesstools::amp::Amp;
 use crate::harnesstools::rehydrate::RehydrateMessage;
@@ -15,7 +16,7 @@ impl SessionSync for Amp {
         Err(SyncError::Unsupported(REMOTE))
     }
 
-    async fn is_live(&self, _id: &str, _cwd: Option<&Path>) -> Liveness {
+    async fn is_live_among(&self, _id: &str, _cwd: Option<&Path>, _: &Processes) -> Liveness {
         Liveness::Unknown
     }
 

@@ -21,6 +21,8 @@ pub struct Fake<'a> {
     pub start: &'a str,
     pub unreadable: &'a [&'a str],
     pub cwd: Option<&'a Path>,
+    /// The process that started it.
+    pub parent: u32,
 }
 
 impl<'a> Fake<'a> {
@@ -33,6 +35,7 @@ impl<'a> Fake<'a> {
             start,
             unreadable: &[],
             cwd: None,
+            parent: 0,
         }
     }
 }
@@ -44,8 +47,9 @@ pub fn procs(dir: &Path, processes: &[Fake<'_>]) -> Processes {
     for p in processes {
         let at = root.join(p.pid.to_string());
         std::fs::create_dir_all(&at).unwrap();
-        let fields = vec!["0"; 18].join(" ");
-        let stat = format!("{} ({} x) {} {fields} {} 0", p.pid, p.comm, p.state, p.start);
+        let fields = vec!["0"; 17].join(" ");
+        let stat =
+            format!("{} ({} x) {} {} {fields} {} 0", p.pid, p.comm, p.state, p.parent, p.start);
         let files = [
             ("cmdline", p.cmdline.to_vec()),
             ("comm", format!("{}\n", p.comm).into_bytes()),
@@ -68,6 +72,63 @@ pub fn procs(dir: &Path, processes: &[Fake<'_>]) -> Processes {
         }
     }
     Processes::ProcFs(root)
+}
+
+/// The pids that `procs` lists, in order.
+fn pids(procs: &Processes) -> Vec<u32> {
+    let mut pids: Vec<u32> = procs.list().unwrap().iter().map(|p| p.pid).collect();
+    pids.sort_unstable();
+    pids
+}
+
+/// Process `pid`, named `comm` and run as `cmdline`, started by `parent`.
+fn child<'a>(pid: u32, comm: &'a str, cmdline: &'a [u8], parent: u32) -> Fake<'a> {
+    Fake {
+        comm,
+        parent,
+        ..Fake::running(pid, cmdline, "1")
+    }
+}
+
+#[rstest]
+// claude -> sh -c '<hook>' -> atuin: the shell is passed over.
+#[case::through_a_shell(&[(20, "sh", b"/bin/sh\0-c\0atuin hook\0" as &[u8], 10)], Some(10))]
+// A login shell names itself with a leading dash.
+#[case::through_a_login_shell(&[(20, "zsh", b"-zsh\0" as &[u8], 10)], Some(10))]
+// An agent whose program has another name (Claude Code's versions path) is found all the same.
+#[case::directly(&[], Some(10))]
+// Nothing but shells up to init.
+#[case::only_shells(&[(20, "sh", b"sh\0" as &[u8], 1)], None)]
+fn the_agent_is_the_nearest_process_that_is_not_a_shell(
+    dir: TempDir,
+    #[case] between: &[(u32, &str, &[u8], u32)],
+    #[case] expected: Option<u32>,
+) {
+    let hook_parent = between.first().map_or(10, |(pid, ..)| *pid);
+    let mut fakes = vec![
+        child(10, "2.1.322", b"/home/u/.local/share/claude/versions/2.1.322\0", 1),
+        child(30, "atuin", b"atuin\0hook\0claude-code\0", hook_parent),
+    ];
+    fakes.extend(
+        between.iter().map(|&(pid, comm, cmdline, parent)| child(pid, comm, cmdline, parent)),
+    );
+    let procs = procs(dir.path(), &fakes);
+
+    assert_eq!(procs.agent_above(30), expected);
+}
+
+#[rstest]
+fn a_listed_table_is_read_once_and_shared_by_its_clones(dir: TempDir) {
+    let listed = procs(dir.path(), &[Fake::running(10, b"pi\0", "1")]).listed();
+    let clone = listed.clone();
+    assert_eq!(pids(&clone), [10]);
+
+    // A process started after the first listing isn't in the kept list.
+    procs(dir.path(), &[Fake::running(11, b"pi\0", "2")]);
+    assert_eq!(pids(&listed), [10]);
+    assert_eq!(pids(&clone), [10]);
+    // Asking about one process still reads it afresh.
+    assert!(listed.running(11).unwrap().is_some());
 }
 
 #[rstest]
@@ -352,6 +413,7 @@ pub fn entry(pid: u32, name: &str, cmd: &[&str], start_time: u64) -> TableEntry 
         start_time,
         zombie: false,
         cwd: None,
+        parent: None,
     }
 }
 

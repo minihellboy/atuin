@@ -44,11 +44,12 @@ impl SessionSync for Copilot {
         blocking(move || locate(&root, &id).map(|path| read_tip(&path)).transpose()).await
     }
 
-    async fn is_live(&self, id: &str, _cwd: Option<&Path>) -> Liveness {
+    async fn is_live_among(&self, id: &str, _cwd: Option<&Path>, procs: &Processes) -> Liveness {
         let Some(dir) = session_dir(&default_root(), id) else {
             return Liveness::NotLive;
         };
-        blocking_liveness(move || liveness(&dir, &Processes::here())).await
+        let procs = procs.clone();
+        blocking_liveness(move || liveness(&dir, &procs)).await
     }
 
     async fn append(
@@ -491,6 +492,7 @@ mod tests {
                         start_time: 1,
                         zombie: false,
                         cwd: None,
+                        parent: None,
                     })
                     .collect(),
             )
