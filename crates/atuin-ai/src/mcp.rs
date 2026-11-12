@@ -24,8 +24,10 @@ use eyre::Result;
 use rmcp::handler::server::common::schema_for_type;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
-    Implementation, JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
-    ServerConfig, Tool, ToolAnnotations,
+    GetPromptRequestParams, GetPromptResponse, Implementation, JsonObject, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents,
+    ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::{Peer, RequestContext, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
@@ -45,6 +47,9 @@ use crate::tools::{
     AtuinHistoryToolCall, AtuinOutputToolCall, DEFAULT_HISTORY_RESULTS, HistorySearchFilterMode,
     MAX_HISTORY_RESULTS, ToolOutcome,
 };
+
+mod prompts;
+mod resources;
 
 struct AtuinMcp {
     db: Sqlite,
@@ -223,7 +228,9 @@ fn local_instructions() -> String {
 /// The initialize result, separated from the handler so tests can assert on
 /// it without constructing a database-backed server.
 fn server_info(instructions: String) -> ServerConfig {
-    ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+    let capabilities =
+        ServerCapabilities::builder().enable_tools().enable_resources().enable_prompts().build();
+    ServerConfig::new(capabilities)
         .with_server_info(Implementation::new("atuin", env!("CARGO_PKG_VERSION")))
         .with_instructions(instructions)
 }
@@ -244,6 +251,63 @@ impl ServerHandler for AtuinMcp {
             .with_cache_scope(CacheScope::Private))
     }
 
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        let client = context.client_info();
+        let caller = self.caller(client.as_ref().map(|c| c.name.as_str()));
+        let resources = resources::list(&self.settings, &caller).await;
+        // The recent threads change as agents work, so the list is never cached.
+        Ok(ListResourcesResult::with_all_items(resources)
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private))
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        Ok(ListResourceTemplatesResult::with_all_items(resources::templates())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let client = context.client_info();
+        let caller = self.caller(client.as_ref().map(|c| c.name.as_str()));
+        let text = resources::read(&request.uri, &self.settings, &caller).await?;
+        let contents = ResourceContents::text(text, request.uri).with_mime_type("text/plain");
+        Ok(ReadResourceResult::new(vec![contents])
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)
+            .into())
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        Ok(ListPromptsResult::with_all_items(prompts::list())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        Ok(prompts::get(&request.name, request.arguments.as_ref())?.into())
+    }
+
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -258,10 +322,7 @@ impl ServerHandler for AtuinMcp {
         // Stateless clients (protocol 2026-07-28, e.g. Claude Code) skip `initialize` and send
         // their client info in each request's `_meta`.
         let client = context.client_info();
-        let caller = Caller {
-            client: client.as_ref().map(|c| c.name.as_str()),
-            own: &self.own_session,
-        };
+        let caller = self.caller(client.as_ref().map(|c| c.name.as_str()));
         // Bad arguments come back as a tool error, not a JSON-RPC one, so the model sees what was
         // wrong and can retry (MCP SEP-1303); many clients never show protocol errors to it.
         let outcome = match request.name.as_ref() {
@@ -312,6 +373,16 @@ impl ServerHandler for AtuinMcp {
             }
         };
         Ok(result.into())
+    }
+}
+
+impl AtuinMcp {
+    /// The calling agent, named `client` in its request.
+    const fn caller<'a>(&'a self, client: Option<&'a str>) -> Caller<'a> {
+        Caller {
+            client,
+            own: &self.own_session,
+        }
     }
 }
 
@@ -535,9 +606,11 @@ fn tool_definitions() -> Vec<Tool> {
              most recently active first, optionally only those in a directory (cwd: '.' for this \
              project) or active since a time (since: 'today'). Use it to pick up where the \
              previous thread on this project left off ('continue', 'last time') or to see what \
-             agents worked on recently, when you have no specific words to search for. Each entry \
-             gives the thread id, harness, last-active time, message count, title, and directory. \
-             Requires the Atuin daemon with thread capture enabled.",
+             agents worked on recently, when you have no specific words to search for. With open: \
+             true, it lists only the threads an agent on this machine has open now, to see which \
+             other agents are running. Each entry gives the thread id, harness, last-active time, \
+             message count, title, and directory, and says when the thread is open now. Requires \
+             the Atuin daemon with thread capture enabled.",
             schema_for_type::<AtuinThreadsListToolCall>(),
         )
         .annotate(ToolAnnotations::with_title("List agent threads").read_only(true)),
