@@ -5,8 +5,10 @@ use std::str::FromStr;
 
 use atuin_client::history::HistoryId;
 use atuin_common::range::PyStyleIdxRange;
+use atuin_daemon::grpc::history::pb::{ChunkedOutputLineView, GetCommandOutputResponse};
 use eyre::Result;
 use serde::Deserialize;
+use vt100::capture::basic_formatted_to_plain;
 
 use super::{NO_OUTPUT_ADVICE, format_chunked_output_line_views_for_llm};
 use crate::permissions::rule::Rule;
@@ -106,7 +108,7 @@ impl AtuinOutputToolCall {
             Err(e) => return ToolOutcome::Error(format!("Failed to fetch command output: {e}")),
         };
 
-        let body = format_chunked_output_line_views_for_llm(response.lines());
+        let body = format_plain_for_llm(&response);
         if body.is_empty() {
             return ToolOutcome::Success(if self.ranges.is_empty() {
                 format!("Captured output for history ID {history_id} is empty.")
@@ -129,11 +131,30 @@ impl AtuinOutputToolCall {
     }
 }
 
+/// Render the selected lines as plain numbered text for the LLM.
+///
+/// The daemon stores output with its SGR escape sequences, which only cost the model tokens. Each
+/// line is stripped of them, and of the trailing blanks a terminal row is padded with.
+fn format_plain_for_llm(response: &GetCommandOutputResponse) -> String {
+    let plain: Vec<(i64, String)> = response
+        .lines()
+        .map(|view| {
+            let mut text: String = basic_formatted_to_plain(view.content).collect();
+            text.truncate(text.trim_end_matches([' ', '\t']).len());
+            (view.line, text)
+        })
+        .collect();
+    format_chunked_output_line_views_for_llm(plain.iter().map(|(line, content)| {
+        ChunkedOutputLineView {
+            line: *line,
+            content,
+        }
+    }))
+}
+
 #[cfg(test)]
 mod tests {
-    use atuin_daemon::grpc::history::pb::{
-        ChunkedOutputLineView, CommandCapture, CommandCaptureMeta, GetCommandOutputResponse,
-    };
+    use atuin_daemon::grpc::history::pb::{CommandCapture, CommandCaptureMeta};
     use rstest::rstest;
 
     use super::*;
@@ -264,5 +285,27 @@ mod tests {
             format_chunked_output_line_views_for_llm(chunked.lines()),
             "-3\txray\n-2\tyankee"
         );
+    }
+
+    #[rstest]
+    #[case::colored("\x1b[38;2;204;102;102;1merror:\x1b[m bad", "1\terror: bad")]
+    #[case::padded_row("done\x1b[m      ", "1\tdone")]
+    #[case::plain("plain text", "1\tplain text")]
+    fn atuin_output_strips_escape_codes_and_row_padding(
+        #[case] output: &str,
+        #[case] expected: &str,
+    ) {
+        let capture = CommandCapture {
+            output_start: output.to_string(),
+            output_end: None,
+            meta: Some(CommandCaptureMeta {
+                output_observed_bytes: 0,
+                terminal_width: 80,
+                terminal_height: 24,
+            }),
+        };
+        let chunked = GetCommandOutputResponse::build(&capture, &[PyStyleIdxRange::new(0, -1)]);
+
+        assert_eq!(format_plain_for_llm(&chunked), expected);
     }
 }
