@@ -22,6 +22,8 @@ mod sync;
 
 #[cfg(feature = "sync")]
 mod account;
+#[cfg(feature = "ai")]
+mod acp;
 
 #[cfg(feature = "daemon")]
 mod daemon;
@@ -132,6 +134,11 @@ pub enum Cmd {
     #[command(about = fl!("cmd-hook"))]
     #[couture(category = "advanced")]
     Hook(hook::Cmd),
+
+    /// Run an Agent Client Protocol agent, recording the commands it runs and its sessions
+    #[cfg(feature = "ai")]
+    #[couture(category = "ai")]
+    Acp(acp::Cmd),
 
     /// Run the AI assistant
     #[cfg(feature = "ai")]
@@ -334,6 +341,8 @@ impl Cmd {
         match self {
             Self::History(history) => return history.run(&Arc::new(settings)).await,
             Self::Hook(hook) => return hook.run(&Arc::new(settings)).await,
+            #[cfg(feature = "ai")]
+            Self::Acp(acp) => return acp.run(&Arc::new(settings)).await,
             Self::Init(init) => return init.run(&settings).await,
             Self::Doctor => return doctor::run(&settings).await,
             #[cfg(feature = "self-update")]
@@ -404,6 +413,9 @@ impl Cmd {
             Self::Wrapped { year } => wrapped::run(year, &db, &settings, sqlite_store, theme).await,
 
             Self::TrickOrTreat(cmd) => cmd.run(&db, &settings).await,
+
+            #[cfg(feature = "ai")]
+            Self::Acp(_) => unreachable!(),
 
             Self::History(_)
             | Self::Hook(_)

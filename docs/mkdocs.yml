@@ -186,6 +186,7 @@ plugins:
           - ai/command-output.md: Let Atuin AI read command outputs - capture via pty-proxy and the daemon.
           - ai/threads.md: Threads - search and resume the AI coding-agent sessions the daemon captures, and rebuild their index.
           - ai/mcp.md: Built-in MCP server exposing history search and command output to Claude Code, Cursor, and other AI tools.
+          - ai/acp.md: Run Agent Client Protocol agents through Atuin to record the commands they run in the editor and their open sessions.
           - ai/self-hosting.md: Self-hosting the Atuin AI backend.
         Misc:
           - known-issues.md: Known issues with ZFS and network filesystems.
@@ -306,6 +307,7 @@ nav:
       - "Tools & Permissions": ai/tools-permissions.md
       - "Reading Command Output": ai/command-output.md
       - "MCP Server": ai/mcp.md
+      - "Agents in Your Editor (ACP)": ai/acp.md
       - "Self Hosting & Local Models": ai/self-hosting.md
   - Known Issues: known-issues.md
   - Integrations: integrations.md
