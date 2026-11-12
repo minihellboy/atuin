@@ -266,8 +266,42 @@ Search, list and read your [threads](./threads.md): the sessions of your coding 
 
 Search and list both take `since`, which keeps only threads active at or after that time. A thread counts by when it was last active. Search therefore keeps an old match in a thread that is still in use. If the id given to `atuin_threads_read` is a prefix of several threads, the error lists them, so the agent can pick one.
 
+Each result says when an agent on this machine has the thread open now, such as "open now (pid 4242, idle for 3 hours)". `atuin_threads_list` with `open: true` lists only the open threads, so an agent can see which other agents are running. Reading an open thread warns that the agent may still be adding to it.
+
+How exact this is depends on the agent:
+
+- **With Atuin's [lifecycle hooks](../guide/agent-hooks.md#open-sessions)** (Claude Code and Codex), and agents run through [`atuin acp`](./acp.md): exact. The result also says whether the agent is working, idle, or waiting for you to answer it.
+- **Claude Code and Codex without them**: exact, from the agent's own records, with the process id. Only threads active in the last week are checked.
+- **Other agents**, such as opencode and pi, record nothing. A thread of theirs shows as "may be open" while one of their processes runs where the thread works.
+
 These need thread capture turned on with `atuin config enable threads`.
 
 !!! note "Session scope"
 
     The `session` filter mode only works when the MCP server is launched from inside an Atuin-enabled shell session. Clients like editors usually launch it outside of one, in which case the other filter modes still work as normal.
+
+## Resources
+
+The server also offers its data as MCP resources, which an agent reads in without calling a tool. In Claude Code, type `@` to mention one in a prompt.
+
+| Resource | What it holds |
+|---|---|
+| `atuin://threads/open` | The threads that agents on this machine have open now |
+| `atuin://thread/<id>` | The last 40 messages of a thread, by its atuin id or a unique prefix, or `latest` |
+| `atuin://output/<history-id>` | The captured output of a command, by its history id |
+
+The list names the open threads and the ten most recent threads, so they show up when you type `@`.
+
+## Prompts
+
+The server offers three prompts. Claude Code shows them as slash commands, such as `/mcp__atuin__continue`.
+
+| Prompt | What it asks the agent |
+|---|---|
+| `continue` | Find the last thread in this project, say where it left off, and carry on. Pass a `topic` to find an earlier thread about it. |
+| `why-failed` | Find the last command that failed in this project, read its output, and explain the failure. Pass `command` to pick another. |
+| `agents` | List the threads open on this machine, and what each agent is doing. |
+
+## Agent skill
+
+`atuin mcp install` also writes an [Agent Skill](https://agentskills.io) for Claude Code and Codex, as `skills/atuin/SKILL.md` in each agent's config directory. It tells the agent when Atuin's tools answer a question, for agents that shorten or drop the server's instructions. A `SKILL.md` there that you wrote yourself is left as it is.
