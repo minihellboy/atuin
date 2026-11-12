@@ -18,11 +18,12 @@ pub mod kiro;
 pub mod mcp;
 pub mod note;
 pub mod opencode;
-pub mod presence;
 pub mod pi;
+pub mod presence;
 pub mod rehydrate;
 pub mod resume;
 pub mod session;
+pub mod skill;
 pub mod sync;
 
 use amp::Amp;

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use atuin_client::database::Sqlite;
 use atuin_client::settings::Settings;
 use atuin_common::harnesstools::mcp::InstallMcp;
-use atuin_common::harnesstools::{AnyHarness, Harness};
+use atuin_common::harnesstools::{AnyHarness, Harness, skill};
 use atuin_common::userio;
 use clap::{Parser, Subcommand};
 use eyre::{Result, bail};
@@ -121,6 +121,19 @@ async fn install_all() -> Result<()> {
 
 async fn install(harness: AnyHarness) -> Result<()> {
     harness.install_mcp().await?;
+    // The skill helps, but the server works without it, so failing to write it fails nothing.
+    if let Some(skills) = harness.skills_dir() {
+        match skill::install_in(&skills) {
+            Ok(Some(path)) => {
+                userio::log::info!("mcp-skill-installed", path = path.display().to_string());
+            }
+            Ok(None) => userio::log::info!(
+                "mcp-skill-kept",
+                path = skills.join(skill::NAME).display().to_string()
+            ),
+            Err(err) => eprintln!("Could not write atuin's skill for {}: {err}", harness.name()),
+        }
+    }
     userio::log::info!("mcp-restart-harness", harness = harness.name());
     Ok(())
 }

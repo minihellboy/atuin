@@ -92,6 +92,12 @@ pub trait InstallMcp: Harness {
     /// rerun picks up a binary that has moved.
     #[allow(async_fn_in_trait)]
     async fn install_mcp(&self) -> Result<(), InstallMcpError>;
+
+    /// The directory the harness reads the user's Agent Skills from, where `atuin mcp install`
+    /// writes Atuin's skill ([`super::skill`]). `None` for a harness atuin writes no skill for.
+    fn skills_dir(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 impl InstallMcp for Amp {
@@ -115,6 +121,11 @@ impl InstallMcp for Ccode {
         )
     }
 
+    /// `<config dir>/skills`, beside its settings.
+    fn skills_dir(&self) -> Option<PathBuf> {
+        Some(super::ccode::config_dir().joined("skills"))
+    }
+
     async fn install_mcp(&self) -> Result<(), InstallMcpError> {
         let atuin = &executable()?;
         // `claude mcp add` refuses a name that's taken.
@@ -126,6 +137,11 @@ impl InstallMcp for Ccode {
 impl InstallMcp for Codex {
     fn mcp_config_path(&self) -> PathBuf {
         codex::home().joined("config.toml")
+    }
+
+    /// `$CODEX_HOME/skills`.
+    fn skills_dir(&self) -> Option<PathBuf> {
+        Some(codex::home().joined("skills"))
     }
 
     async fn install_mcp(&self) -> Result<(), InstallMcpError> {
