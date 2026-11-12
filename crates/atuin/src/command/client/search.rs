@@ -254,6 +254,8 @@ impl Cmd {
                 exclude_cwd: self.exclude_cwd.as_deref(),
                 before: self.before.as_deref(),
                 after: self.after.as_deref(),
+                before_time: None,
+                after_time: None,
                 limit: self.limit,
                 offset: self.offset,
                 reverse: self.reverse,

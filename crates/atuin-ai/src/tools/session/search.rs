@@ -18,8 +18,8 @@ use super::caller::{Caller, is_own};
 use super::read::RoleArg;
 use super::{connect, elsewhere_note, one_line, render_session_summary, resolve_cwd};
 use crate::commands::session::HarnessArg;
-use crate::tools::ToolOutcome;
 use crate::tools::search_terms::SearchTermsArg;
+use crate::tools::{ToolOutcome, when};
 
 /// How many sessions matching anywhere a cwd-filtered search scans to say what the filter left
 /// out.
@@ -60,6 +60,11 @@ pub struct AtuinThreadsSearchToolCall {
     /// injected). ["user"] finds what people asked for and corrected. Omit for every role.
     #[serde(default)]
     pub roles: Option<Vec<RoleArg>>,
+    /// Only sessions active at or after this time, e.g. 'today', 'yesterday', '3 days ago',
+    /// '2026-09-01'. Relative dates are in the user's local time. A session counts by when it was
+    /// last active, so an old match in a session still in use today is kept.
+    #[serde(default)]
+    pub since: Option<String>,
 }
 
 impl AtuinThreadsSearchToolCall {
@@ -69,8 +74,10 @@ impl AtuinThreadsSearchToolCall {
 
     async fn run(&self, settings: &Settings, caller: &Caller<'_>) -> Result<String, ToolOutcome> {
         let mut client = connect(settings).await?;
+        let since = when::parse_bound("since", self.since.as_deref(), settings.dialect.into())?;
         let scope = Scope {
             harness: self.harness.map(HarnessKind::from),
+            since,
             include_subagents: self.include_subagents,
             roles: self.roles.iter().flatten().copied().map(MessageRole::from).collect(),
         };
@@ -183,6 +190,7 @@ impl AtuinThreadsSearchToolCall {
 /// The filters every search of one call shares.
 struct Scope {
     harness: Option<HarnessKind>,
+    since: Option<time::OffsetDateTime>,
     include_subagents: bool,
     roles: Vec<MessageRole>,
 }
@@ -200,6 +208,7 @@ async fn search(
         workspace: cwd.map(PathBuf::from),
         exclude_subagents: !scope.include_subagents,
         roles: scope.roles.clone(),
+        updated_since: scope.since,
         ..SessionFilter::default()
     };
     let terms = terms.into_iter().map(str::to_owned).collect();

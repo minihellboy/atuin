@@ -398,7 +398,9 @@ fn tool_definitions() -> Vec<Tool> {
                     'directory' to the exact current working directory, 'host' to \
                     this machine, 'session' to the shell session that launched this \
                     server (errors when it was not launched from a shell). Start \
-                    global and narrow only if results are noisy.",
+                    global and narrow only if results are noisy. When cwd is given, \
+                    'workspace' and 'directory' use it in place of the current project, \
+                    and 'workspace' is the default.",
             },
             "limit": {
                 "type": "integer",
@@ -423,6 +425,25 @@ fn tool_definitions() -> Vec<Tool> {
                      Multiple entries are OR-ed. Omit for everything.",
                     KNOWN_AGENTS.join(", ")
                 ),
+            },
+            "since": {
+                "type": "string",
+                "description": "Only commands run at or after this time, e.g. 'today', \
+                    'yesterday', '3 hours ago', '2026-09-01'. Relative dates are in the \
+                    user's local time.",
+            },
+            "until": {
+                "type": "string",
+                "description": "Only commands run before this time, in the same forms as \
+                    since. 'today' means before today began.",
+            },
+            "cwd": {
+                "type": "string",
+                "description": "A project directory to search the commands of, in place of \
+                    the current project. Without filter_modes, it searches that directory's \
+                    repository, as 'workspace' does. It can also be combined with \
+                    'directory'. Relative paths resolve against the current project \
+                    directory. It has no effect on the other scopes.",
             },
         },
         "required": ["query"],

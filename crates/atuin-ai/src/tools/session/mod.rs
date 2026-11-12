@@ -59,7 +59,7 @@ pub async fn list_sessions(
 /// project is, and `.` would silently match nearly everything, so that is an error.
 ///
 /// `None`, or a blank string (models often pass `""` for "no filter"), is no filter.
-fn resolve_cwd(cwd: Option<&str>) -> Result<Option<PathBuf>, ToolOutcome> {
+pub fn resolve_cwd(cwd: Option<&str>) -> Result<Option<PathBuf>, ToolOutcome> {
     let Some(cwd) = cwd.map(str::trim).filter(|c| !c.is_empty()) else {
         return Ok(None);
     };

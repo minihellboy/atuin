@@ -24,6 +24,7 @@ pub mod descriptor;
 pub mod output;
 pub mod search_terms;
 pub mod session;
+mod when;
 
 pub use output::get::AtuinOutputToolCall;
 
@@ -998,6 +999,13 @@ pub struct AtuinHistoryToolCall {
     pub limit: i64,
     pub only_failed: bool,
     pub authors: OrFilter<Vec<AuthorPattern>>,
+    /// Only commands run at or after this time, as the model wrote it. Parsed when the call runs.
+    pub since: Option<String>,
+    /// Only commands run before this time, as the model wrote it. Parsed when the call runs.
+    pub until: Option<String>,
+    /// The directory that the 'directory' and 'workspace' scopes mean, in place of the MCP
+    /// server's own. Without a scope, it makes the search a 'workspace' one.
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, EnumString, IntoStaticStr)]
@@ -1039,6 +1047,9 @@ struct HistoryArgs {
     limit: Option<i64>,
     only_failed: Option<bool>,
     authors: Option<Vec<String>>,
+    since: Option<String>,
+    until: Option<String>,
+    cwd: Option<String>,
 }
 
 impl TryFrom<&serde_json::Value> for AtuinHistoryToolCall {
@@ -1071,6 +1082,9 @@ impl TryFrom<&serde_json::Value> for AtuinHistoryToolCall {
             limit: args.limit.unwrap_or(DEFAULT_HISTORY_RESULTS).clamp(1, MAX_HISTORY_RESULTS),
             only_failed: args.only_failed.unwrap_or(false),
             authors,
+            since: args.since,
+            until: args.until,
+            cwd: args.cwd,
         })
     }
 }
@@ -1099,6 +1113,19 @@ impl PermissibleToolCall for AtuinHistoryToolCall {
 }
 
 impl AtuinHistoryToolCall {
+    /// The scope the search uses: the first one given, else the default.
+    ///
+    /// A `cwd` names a project to search. Without a scope, it makes the search a 'workspace' one.
+    /// Otherwise the search is global.
+    fn search_mode(&self) -> HistorySearchFilterMode {
+        let default = if self.cwd.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+            HistorySearchFilterMode::Workspace
+        } else {
+            HistorySearchFilterMode::Global
+        };
+        self.filter_modes.first().copied().unwrap_or(default)
+    }
+
     pub(crate) async fn execute(
         &self,
         db: &atuin_client::database::Sqlite,
@@ -1108,13 +1135,31 @@ impl AtuinHistoryToolCall {
 
         // query_context rather than current_context: when running outside an
         // atuin-hooked shell (e.g. as an MCP server) there is no ATUIN_SESSION.
-        let context = match database::query_context(settings).await {
+        let mut context = match database::query_context(settings).await {
             Ok(ctx) => ctx,
             Err(e) => return ToolOutcome::Error(format!("Failed to get history context: {e}")),
         };
+        match session::resolve_cwd(self.cwd.as_deref()) {
+            Ok(Some(dir)) => {
+                // A directory that isn't on this machine has no repository to find. There,
+                // 'workspace' matches everything under the directory itself.
+                context.vcs_root = atuin_common::utils::in_vcs_repo(&dir);
+                context.cwd = dir.to_string_lossy().into_owned();
+            }
+            Ok(None) => {}
+            Err(outcome) => return outcome,
+        }
+        let dialect = settings.dialect.into();
+        let since = match when::parse_bound("since", self.since.as_deref(), dialect) {
+            Ok(since) => since,
+            Err(outcome) => return outcome,
+        };
+        let until = match when::parse_bound("until", self.until.as_deref(), dialect) {
+            Ok(until) => until,
+            Err(outcome) => return outcome,
+        };
 
-        let search_mode =
-            self.filter_modes.first().copied().unwrap_or(HistorySearchFilterMode::Global);
+        let search_mode = self.search_mode();
 
         // An empty session would silently match nothing; error instead so a
         // missing $ATUIN_SESSION (e.g. MCP server launched outside a hooked
@@ -1134,6 +1179,8 @@ impl AtuinHistoryToolCall {
             limit: Some(self.limit + 1),
             only_failed: self.only_failed,
             authors: self.authors.as_slice_filter(),
+            after_time: since,
+            before_time: until,
             ..Default::default()
         };
 
@@ -1186,6 +1233,9 @@ impl AtuinHistoryToolCall {
             }
             if !self.authors.is_all() {
                 hints.push("drop the authors filter");
+            }
+            if since.is_some() || until.is_some() {
+                hints.push("widen or drop the since/until window");
             }
             let mut msg = format!(
                 "No history entries matched query {query:?} (scope: {scope}).",
@@ -1369,10 +1419,29 @@ mod tests {
     }
 
     #[rstest]
+    #[case::nothing(serde_json::json!({}), HistorySearchFilterMode::Global)]
+    #[case::blank_cwd(serde_json::json!({ "cwd": " " }), HistorySearchFilterMode::Global)]
+    #[case::cwd(serde_json::json!({ "cwd": "/src/app" }), HistorySearchFilterMode::Workspace)]
+    #[case::cwd_and_scope(
+        serde_json::json!({ "cwd": "/src/app", "filter_modes": ["directory"] }),
+        HistorySearchFilterMode::Directory
+    )]
+    #[case::scope(serde_json::json!({ "filter_modes": ["host"] }), HistorySearchFilterMode::Host)]
+    fn atuin_history_scope_defaults_to_the_cwd_workspace(
+        #[case] args: serde_json::Value,
+        #[case] expected: HistorySearchFilterMode,
+    ) {
+        let mut input = serde_json::json!({ "query": "cargo" });
+        input.as_object_mut().unwrap().extend(args.as_object().unwrap().clone());
+        let call = AtuinHistoryToolCall::try_from(&input).unwrap();
+        assert_eq!(call.search_mode(), expected);
+    }
+
+    #[rstest]
     fn atuin_history_rejects_unknown_arguments() {
-        let input = serde_json::json!({ "query": "cargo", "since": "2h" });
+        let input = serde_json::json!({ "query": "cargo", "after": "2h" });
         let err = AtuinHistoryToolCall::try_from(&input).unwrap_err().to_string();
-        assert!(err.contains("`since`") && err.contains("`only_failed`"), "{err}");
+        assert!(err.contains("`after`") && err.contains("`since`"), "{err}");
     }
 
     #[rstest]

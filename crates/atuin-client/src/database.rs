@@ -50,6 +50,10 @@ pub struct OptFilters<'a> {
     pub exclude_cwd: Option<&'a str>,
     pub before: Option<&'a str>,
     pub after: Option<&'a str>,
+    /// Only commands run before this instant. Unlike `before`, it needs no parsing.
+    pub before_time: Option<OffsetDateTime>,
+    /// Only commands run at or after this instant. Unlike `after`, it needs no parsing.
+    pub after_time: Option<OffsetDateTime>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub reverse: bool,
@@ -860,6 +864,14 @@ impl Sqlite {
                 sqlx::Error::Decode(format!("invalid `after` filter {after:?}: {e}").into())
             })?;
             sql.and_where_gt("timestamp", quote(i64::conv(parsed.unix_timestamp_nanos())));
+        }
+
+        if let Some(before) = filter_options.before_time {
+            sql.and_where_lt("timestamp", quote(i64::conv(before.unix_timestamp_nanos())));
+        }
+
+        if let Some(after) = filter_options.after_time {
+            sql.and_where_ge("timestamp", quote(i64::conv(after.unix_timestamp_nanos())));
         }
 
         apply_author_filter(&mut sql, filter_options.authors);
@@ -1989,6 +2001,38 @@ mod test {
             .await
             .unwrap();
         assert_eq!(results.iter().map(|h| h.id).collect::<Vec<_>>(), matching_ids);
+    }
+
+    #[rstest]
+    #[case::no_bounds(None, None, &[1, 2, 3])]
+    #[case::after_is_inclusive(Some(2), None, &[2, 3])]
+    #[case::before(None, Some(3), &[1, 2])]
+    #[case::between(Some(2), Some(3), &[2])]
+    #[case::empty_window(Some(3), Some(3), &[])]
+    #[tokio::test]
+    async fn test_search_time_bounds(
+        #[future(awt)] empty_db: Sqlite,
+        #[case] after: Option<i64>,
+        #[case] before: Option<i64>,
+        #[case] expected: &[i64],
+    ) {
+        for timestamp in [1, 2, 3] {
+            let mut entry = save_history_item(&empty_db, &format!("echo {timestamp}")).await;
+            entry.timestamp = OffsetDateTime::from_unix_timestamp(timestamp).unwrap();
+            empty_db.update(&entry).await.unwrap();
+        }
+        let at = |t: i64| OffsetDateTime::from_unix_timestamp(t).unwrap();
+        let results = empty_db
+            .search(DbSearchMode::FullText, FilterMode::Global, &new_context(), "", OptFilters {
+                after_time: after.map(at),
+                before_time: before.map(at),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut actual: Vec<_> = results.iter().map(|h| h.timestamp.unix_timestamp()).collect();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
     }
 
     #[rstest]
