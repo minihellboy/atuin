@@ -491,6 +491,49 @@ preexec_functions+=(__atuin_preexec)
 #------------------------------------------------------------------------------
 # section: atuin-bind
 
+# When ble.sh (>= 0.4) is already loaded, Atuin binds its widgets with
+# `ble-bind -x` instead of the readline macro chain described below. ble.sh
+# replaces readline's line editor, so it emulates `bind`, and each emulated
+# call is slow. The macro chain needs about three such calls per key and
+# keymap. Binding a vi keymap also makes ble.sh load its vi keymap module, even
+# for users who never switch to vi mode. With `ble-bind`, each key is a single
+# native binding. Enter-accept still works: __atuin_accept_line uses ble.sh's
+# accept-line widget whenever ble.sh is attached. The bindings are registered
+# with `blehook/eval-after-load`, so a keymap is only bound once ble.sh loads
+# it.
+__atuin_blesh_can_bind() {
+    # shellcheck disable=SC2154 # _ble_version is set by ble.sh
+    [[ ${BLE_VERSION-} ]] && ((_ble_version >= 400)) &&
+        declare -F ble-bind ble-decode-unkbd blehook/eval-after-load \
+            ble/util/keyseq2chars ble/decode/cmap/decode-chars >/dev/null
+}
+
+__atuin_blesh_bind() {
+    local keymap=$1 keyseq=$2 command=$3 hook
+    case $keymap in
+        emacs)      hook=keymap_emacs ;;
+        vi-insert)  keymap=vi_imap hook=keymap_vi ;;
+        vi-command) keymap=vi_nmap hook=keymap_vi ;;
+        *)          return 2 ;;
+    esac
+    local q=\' Q="'\''"
+    blehook/eval-after-load "$hook" \
+        "__atuin_blesh_bind_now $keymap '${keyseq//$q/$Q}' '${command//$q/$Q}'"
+}
+
+__atuin_blesh_bind_now() {
+    local keymap=$1 keyseq=$2 command=$3 ret chars keys
+    # Convert the readline key sequence (for example "\e[A") into a ble.sh key
+    # specification (for example "up"). ble.sh does the same for `bind -x`.
+    ble/util/keyseq2chars "$keyseq"
+    chars=("${ret[@]}")
+    keys=()
+    ble/decode/cmap/decode-chars "${chars[@]}"
+    ((${#keys[@]})) || return 1
+    ble-decode-unkbd "${keys[@]}"
+    ble-bind -m "$keymap" -x "$ret" "$command"
+}
+
 __atuin_widget=()
 
 __atuin_widget_save() {
@@ -546,10 +589,13 @@ __atuin_widget_run() {
 # followed by the payload <n> and the terminator \a (BEL, \C-g).
 
 __atuin_macro_chain='\C-x\C-_A0\a'
-for __atuin_keymap in emacs vi-insert vi-command; do
-    bind -m "$__atuin_keymap" "\"$__atuin_macro_chain\": \"\""
-done
-unset -v __atuin_keymap
+# With ble.sh, atuin-bind uses ble-bind and never reaches the macro chain.
+if ! __atuin_blesh_can_bind; then
+    for __atuin_keymap in emacs vi-insert vi-command; do
+        bind -m "$__atuin_keymap" "\"$__atuin_macro_chain\": \"\""
+    done
+    unset -v __atuin_keymap
+fi
 
 if ((BASH_VERSINFO[0] >= 5 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3)); then
     # In Bash >= 4.3
@@ -762,7 +808,11 @@ atuin-bind() {
         atuin-ai-resume-vicmd) command=${2/#"$widget"/__atuin_ai_resume --keymap-mode=vim-normal} ;;
     esac
 
-    __atuin_bind_impl "$keymap" "$keyseq" "$command"
+    if __atuin_blesh_can_bind; then
+        __atuin_blesh_bind "$keymap" "$keyseq" "$command"
+    else
+        __atuin_bind_impl "$keymap" "$keyseq" "$command"
+    fi
 }
 
 #------------------------------------------------------------------------------
