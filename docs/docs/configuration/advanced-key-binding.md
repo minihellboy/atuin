@@ -201,6 +201,8 @@ Note: `select-next` and `select-previous` respect the `invert` setting. When `in
 | `return-cd` | Put a command changing to the directory the selected entry ran in on the command line **without executing** |
 | `return-original` | Close the TUI and return the original command line text |
 | `return-query` | Close the TUI and return the current search query |
+| `submit-query` | Submit the typed query to the shell without selecting history |
+| `complete-in-shell` | Return the query and invoke Bash completion during automatic search |
 | `copy` | Copy the selected entry to the clipboard |
 | `delete` | Delete the selected entry from history |
 | `delete-all` | Delete **all** history entries matching the selected command text |
@@ -273,6 +275,7 @@ Conditions let a single key do different things depending on the current state. 
 | `has-results` | The search returned at least one result |
 | `has-context` | The context comes from a previously selected command (`switch-context`) |
 | `shell-up-key-binding` | Atuin was invoked from the shell's up-key binding rather than ctrl-r |
+| `automatic-input` | Automatic search is editing input without an explicit history selection |
 
 ### Boolean expressions
 

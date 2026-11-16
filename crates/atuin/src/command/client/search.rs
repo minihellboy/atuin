@@ -20,7 +20,6 @@ use tracing::instrument;
 
 use super::history::ListMode;
 
-mod auto_open;
 mod engines;
 mod history_list;
 mod inspector;
@@ -212,6 +211,12 @@ impl Cmd {
         }
 
         settings.shell_up_key_binding = self.shell_up_key_binding;
+        settings.shell_auto_open = self.shell_auto_open;
+        if self.shell_auto_open {
+            settings.filter_mode = Some(settings.search.auto_open.filter_mode);
+            settings.requested_search_mode = settings.search.auto_open.search_mode;
+            settings.command_chaining = false;
+        }
 
         // `keymap_mode` specified in config.toml overrides the `--keymap-mode`
         // option specified in the keybindings.
@@ -229,11 +234,8 @@ impl Cmd {
         let history_store = HistoryStore::new(store.clone(), host_id, encryption_key);
 
         if self.interactive {
-            let item = if self.shell_auto_open {
-                auto_open::history(query.join(" "), &settings, db).await?
-            } else {
-                interactive::history(&query, &settings, db, &history_store, theme, held).await?
-            };
+            let item =
+                interactive::history(&query, &settings, db, &history_store, theme, held).await?;
 
             if let Some(result_file) = self.result_file {
                 let mut file = File::create(result_file)?;

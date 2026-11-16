@@ -56,7 +56,7 @@ const TAB_TITLES: [&str; 2] = ["Search", "Inspect"];
 /// Tells the shell integration to execute the returned line instead of inserting it.
 const ACCEPT_PREFIX: &str = "__atuin_accept__:";
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputAction {
     Accept(usize),
     AcceptInspecting,
@@ -66,6 +66,8 @@ pub enum InputAction {
     DeleteAllMatching(usize),
     ReturnOriginal,
     ReturnQuery,
+    SubmitQuery,
+    CompleteInShell,
     Continue,
     Redraw,
     SwitchContext(Option<usize>),
@@ -178,6 +180,7 @@ pub struct State {
     pending_vim_key: Option<char>,
     original_input_empty: bool,
     shell_up_key_binding: bool,
+    automatic: bool,
 
     pub inspecting_state: InspectingState,
 
@@ -237,6 +240,9 @@ impl State {
             self.inspecting_state.reset();
         }
         self.results_state.select(0);
+        if self.automatic {
+            self.results_state.clear_selection();
+        }
         self.results_len = results.len();
 
         if settings.smart_sort {
@@ -248,15 +254,26 @@ impl State {
 
     #[must_use]
     fn handle_input(&mut self, settings: &Arc<Settings>, input: &Event) -> InputAction {
+        let previous = self.search.input.as_str().to_owned();
         if whats_new::dismisses(input) {
             self.whats_new = None;
         }
-        match input {
+        let action = match input {
             Event::Key(k) => self.handle_key_input(settings, k),
             Event::Mouse(m) => self.handle_mouse_input(*m, settings),
             Event::Paste(d) => self.handle_paste_input(d),
             _ => InputAction::Continue,
+        };
+        if self.automatic && self.search.input.as_str() != previous {
+            self.results_state.clear_selection();
+            if matches!(action, InputAction::Continue)
+                && (self.search.input.as_str().is_empty()
+                    || self.search.input.as_str().contains('\n'))
+            {
+                return InputAction::ReturnQuery;
+            }
         }
+        action
     }
 
     fn handle_mouse_input(&mut self, input: MouseEvent, settings: &Arc<Settings>) -> InputAction {
@@ -375,6 +392,9 @@ impl State {
             original_input_empty: self.original_input_empty,
             has_context: self.search.custom_context.is_some(),
             shell_up_key_binding: self.shell_up_key_binding,
+            automatic_input: self.automatic
+                && self.tab_index == 0
+                && (!self.results_state.has_selection() || self.results_len == 0),
         }
     }
 
@@ -512,6 +532,28 @@ impl State {
         settings: &Arc<Settings>,
     ) -> InputAction {
         use crate::command::client::search::keybindings::Action;
+
+        if self.automatic && self.tab_index == 0 && !self.results_state.has_selection() {
+            match action {
+                Action::SelectNext | Action::SelectPrevious => {
+                    if self.results_len > 0 {
+                        self.results_state.select(0);
+                    }
+                    return InputAction::Continue;
+                }
+                Action::Accept | Action::ReturnSelection | Action::AcceptCd | Action::ReturnCd => {
+                    return InputAction::ReturnQuery;
+                }
+                Action::Copy
+                | Action::Delete
+                | Action::DeleteAll
+                | Action::SwitchContext
+                | Action::ToggleTab => {
+                    return InputAction::Continue;
+                }
+                _ => {}
+            }
+        }
 
         if self.tab_index == 1 {
             match action {
@@ -773,6 +815,12 @@ impl State {
             Action::DeleteAll => InputAction::DeleteAllMatching(self.results_state.selected()),
             Action::ReturnOriginal => InputAction::ReturnOriginal,
             Action::ReturnQuery => InputAction::ReturnQuery,
+            Action::SubmitQuery => {
+                self.accept = true;
+                InputAction::SubmitQuery
+            }
+            Action::CompleteInShell => InputAction::CompleteInShell,
+            Action::Exit if self.automatic => InputAction::ReturnQuery,
             Action::Exit => Self::handle_key_exit(settings),
             Action::Redraw => InputAction::Redraw,
             Action::CycleFilterMode => {
@@ -1312,10 +1360,16 @@ impl State {
                 Span::raw(": exit"),
                 Span::raw(", "),
                 Span::styled("<tab>", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(": edit"),
+                Span::raw(if self.eval_context().automatic_input {
+                    ": complete"
+                } else {
+                    ": edit"
+                }),
                 Span::raw(", "),
                 Span::styled("<enter>", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(if settings.enter_accept {
+                Span::raw(if self.eval_context().automatic_input {
+                    ": run input"
+                } else if settings.enter_accept {
                     ": run"
                 } else {
                     ": edit"
@@ -1730,14 +1784,14 @@ fn restore_popup_area(saved: &SavedScreen, popup_rect: Rect, scroll_offset: u16)
     let _ = stdout.flush();
 }
 
-pub(super) struct Stdout {
+struct Stdout {
     writer: TerminalWriter,
     inline_mode: bool,
     no_mouse: bool,
 }
 
 impl Stdout {
-    pub(super) fn new(inline_mode: bool, no_mouse: bool) -> std::io::Result<Self> {
+    pub fn new(inline_mode: bool, no_mouse: bool) -> std::io::Result<Self> {
         terminal::enable_raw_mode()?;
 
         let mut writer = TerminalWriter::new()?;
@@ -1855,6 +1909,10 @@ pub async fn history(
     theme: &Theme,
     held: &Held,
 ) -> Result<String> {
+    if settings.shell_auto_open && !settings.search.auto_open.enabled {
+        let line = query.join(" ");
+        return Ok(shell_frame("edit", &line, line.len()));
+    }
     let inline_height = if settings.shell_up_key_binding {
         settings.inline_height_shell_up_key_binding.unwrap_or(settings.inline_height)
     } else {
@@ -2037,10 +2095,14 @@ pub async fn history(
         pending_vim_key: None,
         original_input_empty: original_query.is_empty(),
         shell_up_key_binding: settings.shell_up_key_binding,
+        automatic: settings.shell_auto_open,
         messages: held.take(),
     };
 
     app.initialize_keymap_cursor(settings);
+    if app.automatic {
+        app.results_state.clear_selection();
+    }
 
     if inline_height > 0 && !popup_mode {
         terminal.clear()?;
@@ -2202,6 +2264,10 @@ pub async fn history(
                                 break 'render r;
                             },
                         }
+                        // Refresh an edited automatic query before consuming queued navigation.
+                        if app.automatic && initial_input != app.search.input.as_str() {
+                            break;
+                        }
                         if !event::poll(Duration::ZERO)? {
                             break;
                         }
@@ -2319,13 +2385,23 @@ pub async fn history(
 
     let chain = is_command_chaining.then_some(original_query.as_str());
 
-    match result {
+    let query_cursor = app.search.input.position();
+    let selected_result_exists = match result {
+        InputAction::Accept(index) => index < results.len(),
+        InputAction::AcceptInspecting => inspecting.is_some(),
+        _ => false,
+    };
+    let output: Result<String> = match result {
         InputAction::AcceptInspecting => Ok(inspecting
-            .map(|entry| selection_output(entry, app.cd, accept, None, &shell))
+            .map(|entry| selection_output(entry, app.cd, accept && !app.automatic, None, &shell))
             .unwrap_or_default()),
-        InputAction::Accept(index) if index < results.len() => {
-            Ok(selection_output(results.swap_remove(index), app.cd, accept, chain, &shell))
-        }
+        InputAction::Accept(index) if index < results.len() => Ok(selection_output(
+            results.swap_remove(index),
+            app.cd,
+            accept && !app.automatic,
+            chain,
+            &shell,
+        )),
         InputAction::ReturnOriginal => Ok(String::new()),
         InputAction::Copy(index) => {
             let cmd = if app.tab_index == 1 {
@@ -2341,9 +2417,21 @@ pub async fn history(
             {
                 tracing::warn!(?e, "failed to copy to clipboard");
             }
-            Ok(String::new())
+            Ok(if app.automatic {
+                app.search.input.as_str().to_owned()
+            } else {
+                String::new()
+            })
         }
-        InputAction::ReturnQuery | InputAction::Accept(_) => {
+        InputAction::SubmitQuery => {
+            let query = app.search.input.into_inner();
+            Ok(if accept && !app.automatic {
+                format!("{ACCEPT_PREFIX}{query}")
+            } else {
+                query
+            })
+        }
+        InputAction::ReturnQuery | InputAction::CompleteInShell | InputAction::Accept(_) => {
             // Either:
             // * index == RETURN_QUERY, in which case we should return the input
             // * out of bounds -> usually implies no selected entry so we return the input
@@ -2357,7 +2445,39 @@ pub async fn history(
         | InputAction::SwitchContext(_) => {
             unreachable!("should have been handled!")
         }
+    };
+    let output = output?;
+    if app.automatic {
+        let action = match result {
+            InputAction::SubmitQuery => "submit",
+            InputAction::CompleteInShell => "complete",
+            InputAction::Accept(_) | InputAction::AcceptInspecting
+                if accept && selected_result_exists =>
+            {
+                "submit"
+            }
+            _ => "edit",
+        };
+        let point = if matches!(
+            result,
+            InputAction::ReturnQuery
+                | InputAction::SubmitQuery
+                | InputAction::CompleteInShell
+                | InputAction::Copy(_)
+        ) {
+            query_cursor
+        } else {
+            output.len()
+        };
+        Ok(shell_frame(action, &output, point))
+    } else {
+        Ok(output)
     }
+}
+
+/// The sentinel preserves trailing newlines through Bash command substitution.
+fn shell_frame(action: &str, line: &str, byte_cursor: usize) -> String {
+    format!("{action}\n{byte_cursor}\n{line}\u{1f}")
 }
 
 /// The line returned to the shell for the selected `entry`; empty returns the original command line.
@@ -2465,7 +2585,7 @@ mod tests {
     use atuin_client::settings::{
         ExitMode, FilterMode, KeymapMode, Preview, PreviewStrategy, SearchMode, Settings, Shells,
     };
-    use atuin_client::theme::ThemeManagerOptions;
+    use atuin_client::theme::{Meaning, ThemeManagerOptions};
     use atuin_common::path::AbsPathBuf;
     use atuin_common::shell::Shell;
     use atuin_common::time::UtcOffsetSpec;
@@ -2518,6 +2638,7 @@ mod tests {
             pending_vim_key: None,
             original_input_empty: false,
             shell_up_key_binding: false,
+            automatic: false,
             inspecting_state: InspectingState::default(),
             keymaps: KeymapSet::defaults(&Settings::utc()),
             search: SearchState {
@@ -3666,6 +3787,137 @@ mod tests {
         // ClearLine
         let _ = state.execute_action(&Action::ClearLine, &settings);
         assert_eq!(state.search.input.as_str(), "");
+    }
+
+    #[rstest]
+    #[case(false, KeyCode::Up)]
+    #[case(true, KeyCode::Down)]
+    fn automatic_navigation_uses_normal_row_order(
+        mut state: State,
+        #[case] invert: bool,
+        #[case] key: KeyCode,
+    ) {
+        let mut settings = Settings::utc();
+        settings.invert = invert;
+        let settings = Arc::new(settings);
+        state.automatic = true;
+        state.results_len = 3;
+        state.results_state.clear_selection();
+        state.keymaps = KeymapSet::from_settings(&settings);
+        for index in 0..3 {
+            let action = state.handle_input(
+                &settings,
+                &ratatui::crossterm::event::Event::Key(KeyEvent::new(key, KeyModifiers::NONE)),
+            );
+            assert_eq!(action, InputAction::Continue);
+            assert!(state.results_state.has_selection());
+            assert_eq!(state.results_state.selected(), index);
+        }
+    }
+
+    #[rstest]
+    fn automatic_custom_keymaps_override_default_acceptance(mut state: State) {
+        use atuin_client::settings::KeyBindingConfig;
+        let mut settings = Settings::utc();
+        settings
+            .keymap
+            .emacs
+            .insert("enter".into(), KeyBindingConfig::Simple("return-query".into()));
+        settings
+            .keymap
+            .emacs
+            .insert("ctrl-j".into(), KeyBindingConfig::Simple("select-previous".into()));
+        let settings = Arc::new(settings);
+        state.automatic = true;
+        state.results_state.clear_selection();
+        state.keymaps = KeymapSet::from_settings(&settings);
+        assert_eq!(
+            state.handle_key_input(&settings, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            InputAction::ReturnQuery
+        );
+        for index in 0..3 {
+            let _ = state.handle_key_input(
+                &settings,
+                &KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+            );
+            assert_eq!(state.results_state.selected(), index);
+        }
+    }
+
+    #[rstest]
+    fn automatic_editing_clears_selection_before_enter(mut state: State, settings: Arc<Settings>) {
+        use ratatui::crossterm::event::Event;
+        state.automatic = true;
+        state.results_state.select(2);
+        let _ = state.handle_input(
+            &settings,
+            &Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+        assert!(!state.results_state.has_selection());
+        assert_eq!(
+            state.handle_input(
+                &settings,
+                &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            ),
+            InputAction::SubmitQuery
+        );
+    }
+
+    #[rstest]
+    fn automatic_and_manual_selected_views_share_theme_and_layout(
+        #[from(state)] mut manual: State,
+        #[from(state)] mut automatic: State,
+        #[values(atuin_client::settings::Style::Compact, atuin_client::settings::Style::Full)]
+        style: atuin_client::settings::Style,
+        #[values(false, true)] invert: bool,
+    ) {
+        use ratatui::backend::{FromCrossterm as _, TestBackend};
+        use ratatui::crossterm::style::Color;
+        let mut settings = Settings::utc();
+        settings.style = style;
+        settings.invert = invert;
+        automatic.automatic = true;
+        let fixed_now = datetime!(2026-11-16 12:00 UTC);
+        manual.now = Box::new(move || fixed_now);
+        automatic.now = Box::new(move || fixed_now);
+        let results = vec![
+            History::capture()
+                .timestamp(fixed_now)
+                .command("ssh -L 8080:localhost:80 host")
+                .cwd("/work/project")
+                .build()
+                .into(),
+        ];
+        let mut themes = ThemeManagerOptions {
+            debug: false,
+            builtin_only: true,
+        }
+        .build();
+        let mut styles = themes.load_theme("default", None).styles.clone();
+        styles.get_mut(&Meaning::Base).unwrap().foreground_color = Some(Color::Cyan);
+        styles.get_mut(&Meaning::AlertError).unwrap().foreground_color = Some(Color::Magenta);
+        let theme = atuin_client::theme::Theme::new("test-custom-theme".into(), None, styles);
+        let mut normal = ratatui::Terminal::new(TestBackend::new(120, 25)).unwrap();
+        let mut auto = ratatui::Terminal::new(TestBackend::new(120, 25)).unwrap();
+        normal
+            .draw(|frame| manual.draw(frame, &results, None, None, &settings, &theme, false))
+            .unwrap();
+        auto.draw(|frame| automatic.draw(frame, &results, None, None, &settings, &theme, false))
+            .unwrap();
+        assert_eq!(normal.backend().buffer(), auto.backend().buffer());
+        let base = ratatui::style::Style::from_crossterm(theme.get_base()).fg.unwrap();
+        assert!(auto.backend().buffer().content.iter().any(|cell| cell.fg == base));
+    }
+
+    #[rstest]
+    fn automatic_shell_frame_round_trips_unicode_and_newlines() {
+        use proptest::prelude::*;
+        proptest!(|(line in any::<String>())| {
+            let output = super::shell_frame("edit", &line, line.len());
+            let fields: Vec<_> = output.strip_suffix('\u{1f}').unwrap().splitn(3, '\n').collect();
+            prop_assert_eq!(fields[1].parse::<usize>().unwrap(), line.len());
+            prop_assert_eq!(fields[2], line);
+        });
     }
 
     #[rstest]
