@@ -263,7 +263,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atuin"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "ansi-to-tui",
  "arboard",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-ai"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "arboard",
  "async-stream",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-client"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -461,6 +461,7 @@ dependencies = [
  "secrecy",
  "semver",
  "serde",
+ "serde_ignored",
  "serde_json",
  "serde_regex",
  "serde_with",
@@ -485,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-common"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "async-stream",
  "atuin-vt100",
@@ -493,6 +494,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "colored",
+ "config",
  "crypto_secretbox",
  "derive_more",
  "dirs 6.0.0",
@@ -565,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-daemon"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "async-stream",
  "atuin-client",
@@ -626,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-domain"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "async-trait",
  "atuin-common",
@@ -661,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-dotfiles"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -679,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-history"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "atuin-client",
  "crossterm",
@@ -692,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-kv"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -713,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-octavo"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -746,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-pty-proxy"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -771,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-scripts"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -799,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-server"
-version = "18.24.7"
+version = "18.24.8"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3485,7 +3487,6 @@ version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e14eda50a3494b3bf7b9ce51c52434a761e383d7238ce1dd5dcec2fbc13e9fb"
 dependencies = [
- "dashmap",
  "hashbrown 0.14.5",
 ]
 
@@ -5789,6 +5790,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
