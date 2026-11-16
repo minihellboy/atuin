@@ -41,6 +41,12 @@ fn write_static_init<W: Write>(writer: &mut W, options: &StaticInitOptions<'_>) 
     writeln!(writer, "__atuin_bind_ctrl_r={bind_ctrl_r}")?;
     writeln!(writer, "__atuin_bind_up_arrow={bind_up_arrow}")?;
     writeln!(writer, "__atuin_bind_ai_resume={bind_ai_resume}")?;
+    writeln!(
+        writer,
+        "__atuin_auto_open_enabled={}",
+        options.auto_open.enabled && env::var("ATUIN_NOBIND").is_err()
+    )?;
+    writeln!(writer, "__atuin_auto_open_min_chars={}", options.auto_open.min_chars)?;
     writeln!(writer, "{}", BASH.main)?;
 
     #[cfg(feature = "ai")]

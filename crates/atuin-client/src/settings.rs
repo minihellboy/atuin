@@ -629,6 +629,9 @@ pub struct TeamsDebug {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Search {
+    /// The automatic history picker for plain Bash in Emacs editing mode.
+    #[serde(default)]
+    pub auto_open: AutoOpen,
     /// The list of enabled filter modes, in order of priority.
     pub filters: Vec<FilterMode>,
 
@@ -648,6 +651,29 @@ pub struct Search {
     ///
     /// One of: `"all"`, `"auto"`, or an array of strings.
     pub shells: Shells,
+}
+
+/// Opens a compact history picker when typing begins at the Bash prompt.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AutoOpen {
+    pub enabled: bool,
+    pub min_chars: std::num::NonZeroU16,
+    pub max_results: std::num::NonZeroU16,
+    pub filter_mode: FilterMode,
+    pub search_mode: RequestedSearchMode,
+}
+
+impl Default for AutoOpen {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_chars: std::num::NonZeroU16::new(1).unwrap(),
+            max_results: std::num::NonZeroU16::new(5).unwrap(),
+            filter_mode: FilterMode::Global,
+            search_mode: RequestedSearchMode::Prefix,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -850,6 +876,7 @@ impl Logs {
 impl Default for Search {
     fn default() -> Self {
         Self {
+            auto_open: AutoOpen::default(),
             filters: vec![
                 FilterMode::Global,
                 FilterMode::Host,
@@ -3305,5 +3332,37 @@ secret_token = \"SENTINEL_SECRET_VALUE\"
         let unknown =
             load_file("sync_url = \"x\"\n[nope]\nx = 1\n[keys]\nscroll_exists = true\n").unknown;
         assert_eq!(unknown.covers(key), covered);
+    }
+
+    #[rstest]
+    fn automatic_search_defaults_to_disabled_global_prefix() {
+        let settings = parse_settings("");
+        let auto = &settings.search.auto_open;
+        assert!(!auto.enabled);
+        assert_eq!(auto.min_chars.get(), 1);
+        assert_eq!(auto.max_results.get(), 5);
+        assert_eq!(auto.filter_mode, FilterMode::Global);
+        assert_eq!(auto.search_mode, RequestedSearchMode::Prefix);
+    }
+
+    #[rstest]
+    fn automatic_search_settings_are_recognized() {
+        let source = "[search.auto_open]\nenabled = true\nmin_chars = 3\nmax_results = \
+                      7\nfilter_mode = 'host'\nsearch_mode = 'fuzzy'\n";
+        assert!(Settings::validate_str(source).unwrap().is_empty());
+        let settings = parse_settings(source);
+        let auto = &settings.search.auto_open;
+        assert!(auto.enabled);
+        assert_eq!(auto.min_chars.get(), 3);
+        assert_eq!(auto.max_results.get(), 7);
+        assert_eq!(auto.filter_mode, FilterMode::Host);
+        assert_eq!(auto.search_mode, RequestedSearchMode::Fuzzy);
+    }
+
+    #[rstest]
+    #[case("min_chars")]
+    #[case("max_results")]
+    fn automatic_search_rejects_zero_limits(#[case] key: &str) {
+        assert!(Settings::validate_str(&format!("[search.auto_open]\n{key} = 0\n")).is_err());
     }
 }

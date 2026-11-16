@@ -385,6 +385,7 @@ __atuin_search_cmd() {
 }
 
 __atuin_history() {
+    __atuin_auto_open_suppressed=1
     # Default action of the up key: When this function is called with the first
     # argument `--shell-up-key-binding`, we perform Atuin's history search only
     # when the up key is supposed to cause the history movement in the original
@@ -428,9 +429,60 @@ __atuin_history() {
     fi
 }
 
+# The automatic picker owns input only until it hands the line back to Readline.
+# It stays dismissed for the rest of this prompt so editing never reopens it.
+__atuin_auto_open_reset() {
+    __atuin_auto_open_suppressed=0
+}
+
+__atuin_auto_open_insert_char() {
+    # Bash exposes the insertion position in characters under the current locale.
+    READLINE_LINE=${READLINE_LINE:0:READLINE_POINT}$1${READLINE_LINE:READLINE_POINT}
+    READLINE_POINT=$((READLINE_POINT + ${#1}))
+    __atuin_auto_open_at_end=$((READLINE_POINT == ${#READLINE_LINE}))
+}
+
+__atuin_auto_open_byte_prefix() {
+    local LC_ALL=C
+    __atuin_auto_open_prefix=${READLINE_LINE:0:$1}
+}
+
+__atuin_auto_open_insert() {
+    local __atuin_auto_open_at_end
+    __atuin_auto_open_insert_char "$1"
+    [[ ${__atuin_auto_open_suppressed-0} == 0 && $__atuin_auto_open_at_end == 1 ]] || return 0
+    [[ $READLINE_LINE != [[:space:]]* && $READLINE_LINE != \#* && $READLINE_LINE != *$'\n'* ]] || return 0
+    ((${#READLINE_LINE} >= __atuin_auto_open_min_chars)) || return 0
+
+    __atuin_auto_open_suppressed=1
+    local output action point __atuin_auto_open_prefix
+    output=$(ATUIN_SHELL=bash ATUIN_QUERY="$READLINE_LINE" atuin search --interactive --shell-auto-open 3>&1 1>&2 2>&3 3>&-) || return 0
+    [[ $output == *$'\x1f' ]] || return 0
+    output=${output%$'\x1f'}
+    action=${output%%$'\n'*}
+    output=${output#*$'\n'}
+    point=${output%%$'\n'*}
+    [[ $point =~ ^[0-9]+$ ]] || return 0
+    case $action in edit|submit|complete|search|eof|backtab|key-[0-3][0-7][0-7]|alt-[0-3][0-7][0-7]) ;; *) return 0 ;; esac
+    READLINE_LINE=${output#*$'\n'}
+    # The picker uses UTF-8 byte offsets. Convert back under Bash's current locale.
+    __atuin_auto_open_byte_prefix "$point"
+    READLINE_POINT=${#__atuin_auto_open_prefix}
+    case $action in
+        submit) __atuin_accept_line "$READLINE_LINE" ;;
+        complete) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": "\C-i"' ;;
+        search) __atuin_history --keymap-mode=emacs ;;
+        eof) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": delete-char' ;;
+        backtab) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": "\e[Z"' ;;
+        key-*) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": "\'"${action#key-}"'"' ;;
+        alt-*) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": "\e\'"${action#alt-}"'"' ;;
+    esac
+}
+
 # `atuin threads resume`: pick a captured AI coding-agent session. The result uses
 # the same protocol as the history search: `__atuin_accept__:` runs it.
 __atuin_ai_resume() {
+    __atuin_auto_open_suppressed=1
     # READLINE_LINE and READLINE_POINT are only supported by bash >= 4.0 or
     # ble.sh.  When it is not supported, we clear them to suppress strange
     # behaviors.
@@ -817,6 +869,28 @@ if command -v __atuin_load_builtin_preexec > /dev/null; then
 fi
 
 (ATUIN_SHELL=bash atuin __internal prepare-search-index >/dev/null 2>&1 &)
+
+__atuin_auto_open_install() {
+    [[ ${__atuin_auto_open_enabled-false} == true && ! ${BLE_VERSION-} ]] || return 0
+    ((BASH_VERSINFO[0] >= 5 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3)) || return 0
+    [[ $(bind -v) == *'set editing-mode emacs'* ]] || return 0
+    local bindings char escaped quoted octal code
+    bindings=$'\n'$(bind -m emacs-standard -p)$'\n'
+    # Only replace printable ASCII keys that still use Readline's default insertion.
+    # Unicode and bracketed paste retain Readline's native bindings.
+    for ((code = 32; code < 127; code++)); do
+        printf -v octal '\\%03o' "$code"
+        printf -v char '%b' "$octal"
+        escaped=${char//\\/\\\\}
+        escaped=${escaped//\"/\\\"}
+        [[ $bindings == *$'\n'\""$escaped"\":\ self-insert$'\n'* ]] || continue
+        printf -v quoted '%q' "$char"
+        atuin-bind -m emacs-standard "$escaped" "__atuin_auto_open_insert $quoted"
+    done
+    __atuin_auto_open_suppressed=0
+    precmd_functions+=(__atuin_auto_open_reset)
+}
+__atuin_auto_open_install
 
 if [[ ${__atuin_pty_proxy_owns_tty-} = 1 ]] && [[ ${ATUIN_PTY_PROXY_ACTIVE-} = 1 ]]; then
     # We're running in an old pty-proxy that expects OSC 133 markers. The outer

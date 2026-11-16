@@ -20,6 +20,7 @@ use tracing::instrument;
 
 use super::history::ListMode;
 
+mod auto_open;
 mod engines;
 mod history_list;
 mod inspector;
@@ -79,6 +80,10 @@ pub struct Cmd {
 
     #[arg(long, hide = true, help = fl!("arg-search-shell-up-key-binding"))]
     shell_up_key_binding: bool,
+
+    /// The Bash automatic picker uses a framed result for shell handoff.
+    #[arg(long, hide = true, requires = "interactive")]
+    shell_auto_open: bool,
 
     #[arg(long, default_value = "auto", help = fl!("arg-search-keymap-mode"))]
     keymap_mode: KeymapMode,
@@ -224,8 +229,11 @@ impl Cmd {
         let history_store = HistoryStore::new(store.clone(), host_id, encryption_key);
 
         if self.interactive {
-            let item =
-                interactive::history(&query, &settings, db, &history_store, theme, held).await?;
+            let item = if self.shell_auto_open {
+                auto_open::history(query.join(" "), &settings, db).await?
+            } else {
+                interactive::history(&query, &settings, db, &history_store, theme, held).await?
+            };
 
             if let Some(result_file) = self.result_file {
                 let mut file = File::create(result_file)?;

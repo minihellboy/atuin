@@ -1730,14 +1730,14 @@ fn restore_popup_area(saved: &SavedScreen, popup_rect: Rect, scroll_offset: u16)
     let _ = stdout.flush();
 }
 
-struct Stdout {
+pub(super) struct Stdout {
     writer: TerminalWriter,
     inline_mode: bool,
     no_mouse: bool,
 }
 
 impl Stdout {
-    pub fn new(inline_mode: bool, no_mouse: bool) -> std::io::Result<Self> {
+    pub(super) fn new(inline_mode: bool, no_mouse: bool) -> std::io::Result<Self> {
         terminal::enable_raw_mode()?;
 
         let mut writer = TerminalWriter::new()?;
