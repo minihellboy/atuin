@@ -82,6 +82,10 @@ vendored-tls = ["atuin-client?/vendored-tls"]
 # axoasset's rustls/aws-lc-rs reqwest backend, which is only avoided by the
 # [patch.crates-io] axoasset fork when building from this repo.
 self-update = ["dep:axoupdater"]
+# Experiment: replace the system allocator. Pick at most one. Neither works on Windows MSVC,
+# so their dependencies are left out there and the system allocator stays.
+jemalloc = ["dep:tikv-jemallocator", "atuin-common/jemalloc"]
+mimalloc = ["dep:mimalloc"]
 profiling-traced = [
     "dep:tracing-opentelemetry",
     "dep:opentelemetry",
@@ -201,3 +205,7 @@ portable-pty = "0.9"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+mimalloc = { workspace = true, optional = true }
+tikv-jemallocator = { workspace = true, optional = true }

@@ -21,6 +21,18 @@ pub(crate) mod shell;
 #[cfg(feature = "sync")]
 mod sync;
 
+// Only the binary chooses the allocator. The libraries leave it to whoever links them.
+#[cfg(all(feature = "jemalloc", feature = "mimalloc"))]
+compile_error!("the `jemalloc` and `mimalloc` features each replace the allocator; pick one");
+
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(all(feature = "mimalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SHA: &str = env!("GIT_HASH");
 

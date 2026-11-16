@@ -9,6 +9,30 @@
 /// It walks every arena, so it can take tens of milliseconds after a large burst. Call it on a
 /// blocking thread. On other platforms and allocators, it does nothing.
 pub fn release_free_memory() {
+    // Experiment only: lets one build measure the daemon with and without the release.
+    if crate::env::var_os("ATUIN_EXPERIMENT_NO_RELEASE").is_some() {
+        return;
+    }
+
+    // With jemalloc as the allocator, Rust's allocations live in its arenas. Purging every arena
+    // hands their free pages back. The bundled SQLite still allocates through glibc, which the
+    // trim below covers.
+    #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+    {
+        // SAFETY: the name is a valid, NUL-terminated mallctl name. A purge reads and writes no
+        // values, so every pointer is null and the length is 0.
+        #[allow(unsafe_code, reason = "calling jemalloc's mallctl")]
+        let _ = unsafe {
+            tikv_jemalloc_sys::mallctl(
+                c"arena.4096.purge".as_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+    }
+
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         // SAFETY: `malloc_trim` takes no pointers and only releases memory that glibc's allocator

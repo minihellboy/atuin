@@ -20,6 +20,8 @@ ansi = ["dep:atuin-vt100"]
 db = ["dep:sqlx"]
 # Enables `atuin_common::fs::tree_watcher`.
 fs-watcher = ["os"]
+# Purges jemalloc's free memory in `atuin_common::os::memory`, when jemalloc is the allocator.
+jemalloc = ["os", "dep:tikv-jemalloc-sys"]
 # Enables `atuin_common::json::jsonl`.
 jsonl = ["io"]
 # Enables `atuin_common::io`.
@@ -128,3 +130,6 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemalloc-sys = { workspace = true, optional = true }
