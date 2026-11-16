@@ -11,6 +11,8 @@ Install Bash, Zsh, Fish, and ble.sh first. Missing dependencies fail with
 macOS, with Homebrew Bash on macOS.
 
 - `e2e_fresh_install`: CLI startup, keys, shell init, doctor, and a read-only home.
+- `e2e_auto_open`: automatic Bash history search, literal command execution, selection, cancellation,
+  completion, Unicode, and paste. This suite requires Bash and does not require ble.sh.
 - `e2e_pty`: shell hooks, search, selection, quoting, resize, and filters.
 - `e2e_daemon`: startup, concurrent writers, persistence, and restart.
 - `e2e_sync`: `atuin sync` with a running daemon, between two machines on an

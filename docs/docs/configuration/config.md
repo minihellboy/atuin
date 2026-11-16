@@ -730,6 +730,41 @@ prefers_reduced_motion = false
 
 ## search
 
+### Automatic search in Bash
+
+The automatic picker opens when you type at a fresh Bash prompt. It is disabled by default.
+It supports plain Bash 4.3 or later in Emacs editing mode. It does not require ble.sh.
+
+```toml
+[search.auto_open]
+enabled = true
+min_chars = 1
+max_results = 5
+filter_mode = "global"
+search_mode = "prefix"
+```
+
+`min_chars` is the number of characters required before opening. `max_results` limits the list
+to at most 20 rows. Both values must be positive. Filter and search modes use the same values
+as the corresponding top-level settings. Restart the shell after changing automatic search settings.
+
+The picker has no selected result until you press Up or Down. Enter runs your typed command
+when no result is selected. With a selected result, Enter respects `enter_accept`. Tab closes
+the picker and invokes your existing Bash Tab binding. Escape keeps your input and cursor and
+dismisses automatic search until the next prompt. Ctrl+R opens the regular search interface.
+Editing the query clears a previous selection.
+
+The integration only replaces printable ASCII keys that still use Readline's default insertion
+binding. Custom printable bindings remain intact. Unicode continues to work inside the picker.
+A non-ASCII first character remains in Readline until a default printable ASCII key triggers
+opening. Leading whitespace, shell comments, multiline input, and bracketed paste do not trigger opening.
+The picker hands multiline pasted input back to Bash without executing it.
+
+This is an automatic picker rather than a passive panel attached to Readline. While it is open,
+Atuin edits the input. Common control and Alt shortcuts return the line to Readline and replay
+the shortcut. Unsupported function keys dismiss the picker. Native Bash completion resumes after
+Tab or dismissal. Vi editing mode and ble.sh retain their existing behavior.
+
 ### `filters`
 
 The list of filter modes available in interactive search, in the order they cycle through when you press ctrl-r. By default, all modes are enabled. Removing a mode from this list disables it entirely. The `workspace` mode is skipped when not in a repository or when `workspaces = false`. See [Filter mode](../guide/advanced-usage.md#filter-mode) for a description of each mode.

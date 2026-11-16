@@ -51,6 +51,7 @@ pub enum Shell {
 
 #[allow(clippy::struct_excessive_bools)]
 struct StaticInitOptions<'a> {
+    pub auto_open: &'a atuin_client::settings::AutoOpen,
     pub enable_up_arrow: bool,
     pub enable_ctrl_r: bool,
     #[cfg_attr(not(feature = "ai"), allow(dead_code))]
@@ -90,6 +91,7 @@ impl Cmd {
 
     fn to_options<'a>(&self, settings: &'a Settings) -> StaticInitOptions<'a> {
         StaticInitOptions {
+            auto_open: &settings.search.auto_open,
             enable_up_arrow: !self.disable_up_arrow && settings.bind_up_arrow,
             enable_ctrl_r: !self.disable_ctrl_r && settings.bind_ctrl_r,
             enable_ai: !self.disable_ai && settings.ai.enabled.unwrap_or(true),
