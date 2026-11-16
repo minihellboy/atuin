@@ -15,6 +15,8 @@ pub enum ConditionAtom {
     HasResults,
     HasContext,
     ShellUpKeyBinding,
+    /// Automatic search is editing typed input without an explicit history selection.
+    AutomaticInput,
 }
 
 /// Boolean expression tree over condition atoms.
@@ -41,6 +43,10 @@ pub enum ConditionExpr {
 /// Context needed to evaluate conditions. This is a pure snapshot of state —
 /// no references to mutable data.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "keymap conditions evaluate independent predicates"
+)]
 pub struct EvalContext {
     /// Current cursor position (unicode width units).
     pub cursor_position: usize,
@@ -58,6 +64,7 @@ pub struct EvalContext {
     pub has_context: bool,
     /// Whether the shell invoked Atuin from its up-key binding rather than ctrl-r.
     pub shell_up_key_binding: bool,
+    pub automatic_input: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -73,13 +80,18 @@ impl ConditionAtom {
             ConditionAtom::InputEmpty => ctx.input_byte_len == 0,
             ConditionAtom::OriginalInputEmpty => ctx.original_input_empty,
             ConditionAtom::ListAtEnd => {
-                ctx.results_len == 0 || ctx.selected_index >= ctx.results_len.saturating_sub(1)
+                !ctx.automatic_input
+                    && (ctx.results_len == 0
+                        || ctx.selected_index >= ctx.results_len.saturating_sub(1))
             }
-            ConditionAtom::ListAtStart => ctx.results_len == 0 || ctx.selected_index == 0,
+            ConditionAtom::ListAtStart => {
+                !ctx.automatic_input && (ctx.results_len == 0 || ctx.selected_index == 0)
+            }
             ConditionAtom::NoResults => ctx.results_len == 0,
             ConditionAtom::HasResults => ctx.results_len > 0,
             ConditionAtom::HasContext => ctx.has_context,
             ConditionAtom::ShellUpKeyBinding => ctx.shell_up_key_binding,
+            ConditionAtom::AutomaticInput => ctx.automatic_input,
         }
     }
 
@@ -96,6 +108,7 @@ impl ConditionAtom {
             "has-results" => Ok(ConditionAtom::HasResults),
             "has-context" => Ok(ConditionAtom::HasContext),
             "shell-up-key-binding" => Ok(ConditionAtom::ShellUpKeyBinding),
+            "automatic-input" => Ok(ConditionAtom::AutomaticInput),
             _ => Err(format!("unknown condition: {s}")),
         }
     }
@@ -113,6 +126,7 @@ impl ConditionAtom {
             ConditionAtom::HasResults => "has-results",
             ConditionAtom::HasContext => "has-context",
             ConditionAtom::ShellUpKeyBinding => "shell-up-key-binding",
+            ConditionAtom::AutomaticInput => "automatic-input",
         }
     }
 }
@@ -407,6 +421,7 @@ mod tests {
             original_input_empty,
             has_context: false,
             shell_up_key_binding: false,
+            automatic_input: false,
         }
     }
 
@@ -496,6 +511,7 @@ mod tests {
     #[case::has_results("has-results")]
     #[case::has_context("has-context")]
     #[case::shell_up_key_binding("shell-up-key-binding")]
+    #[case::automatic_input("automatic-input")]
     fn atom_parse_round_trip(#[case] s: &str) {
         let c = ConditionAtom::from_str(s).unwrap();
         assert_eq!(c.as_str(), s);

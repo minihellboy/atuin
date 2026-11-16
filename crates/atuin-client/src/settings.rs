@@ -659,7 +659,6 @@ pub struct Search {
 pub struct AutoOpen {
     pub enabled: bool,
     pub min_chars: std::num::NonZeroU16,
-    pub max_results: std::num::NonZeroU16,
     pub filter_mode: FilterMode,
     pub search_mode: RequestedSearchMode,
 }
@@ -669,7 +668,6 @@ impl Default for AutoOpen {
         Self {
             enabled: false,
             min_chars: std::num::NonZeroU16::new(1).unwrap(),
-            max_results: std::num::NonZeroU16::new(5).unwrap(),
             filter_mode: FilterMode::Global,
             search_mode: RequestedSearchMode::Prefix,
         }
@@ -1160,6 +1158,9 @@ pub struct Settings {
     /// This is not a real setting. Instead, `atuin search` manually sets this field to true if
     /// the hidden `--shell-up-key-binding` option was passed.
     pub shell_up_key_binding: bool,
+    /// The shell requested automatic entry into the ordinary search interface.
+    #[serde(skip)]
+    pub shell_auto_open: bool,
     /// Whether `atuin init` binds ctrl-r to search. `--disable-ctrl-r` turns it off either way.
     pub bind_ctrl_r: bool,
     /// Whether `atuin init` binds the up arrow to search. `--disable-up-arrow` turns it off either
@@ -3340,28 +3341,25 @@ secret_token = \"SENTINEL_SECRET_VALUE\"
         let auto = &settings.search.auto_open;
         assert!(!auto.enabled);
         assert_eq!(auto.min_chars.get(), 1);
-        assert_eq!(auto.max_results.get(), 5);
         assert_eq!(auto.filter_mode, FilterMode::Global);
         assert_eq!(auto.search_mode, RequestedSearchMode::Prefix);
     }
 
     #[rstest]
     fn automatic_search_settings_are_recognized() {
-        let source = "[search.auto_open]\nenabled = true\nmin_chars = 3\nmax_results = \
-                      7\nfilter_mode = 'host'\nsearch_mode = 'fuzzy'\n";
+        let source = "[search.auto_open]\nenabled = true\nmin_chars = 3\nfilter_mode = \
+                      'host'\nsearch_mode = 'fuzzy'\n";
         assert!(Settings::validate_str(source).unwrap().is_empty());
         let settings = parse_settings(source);
         let auto = &settings.search.auto_open;
         assert!(auto.enabled);
         assert_eq!(auto.min_chars.get(), 3);
-        assert_eq!(auto.max_results.get(), 7);
         assert_eq!(auto.filter_mode, FilterMode::Host);
         assert_eq!(auto.search_mode, RequestedSearchMode::Fuzzy);
     }
 
     #[rstest]
     #[case("min_chars")]
-    #[case("max_results")]
     fn automatic_search_rejects_zero_limits(#[case] key: &str) {
         assert!(Settings::validate_str(&format!("[search.auto_open]\n{key} = 0\n")).is_err());
     }

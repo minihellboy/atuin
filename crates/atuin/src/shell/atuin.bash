@@ -463,7 +463,7 @@ __atuin_auto_open_insert() {
     output=${output#*$'\n'}
     point=${output%%$'\n'*}
     [[ $point =~ ^[0-9]+$ ]] || return 0
-    case $action in edit|submit|complete|search|eof|backtab|key-[0-3][0-7][0-7]|alt-[0-3][0-7][0-7]) ;; *) return 0 ;; esac
+    case $action in edit|submit|complete) ;; *) return 0 ;; esac
     READLINE_LINE=${output#*$'\n'}
     # The picker uses UTF-8 byte offsets. Convert back under Bash's current locale.
     __atuin_auto_open_byte_prefix "$point"
@@ -471,11 +471,6 @@ __atuin_auto_open_insert() {
     case $action in
         submit) __atuin_accept_line "$READLINE_LINE" ;;
         complete) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": "\C-i"' ;;
-        search) __atuin_history --keymap-mode=emacs ;;
-        eof) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": delete-char' ;;
-        backtab) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": "\e[Z"' ;;
-        key-*) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": "\'"${action#key-}"'"' ;;
-        alt-*) bind -m "$__atuin_macro_chain_keymap" '"'"$__atuin_macro_chain"'": "\e\'"${action#alt-}"'"' ;;
     esac
 }
 

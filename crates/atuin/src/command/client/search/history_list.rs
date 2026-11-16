@@ -50,11 +50,22 @@ pub struct HistoryList<'a> {
     columns: &'a [UiColumn],
 }
 
-#[derive(Default)]
 pub struct ListState {
     offset: usize,
     selected: usize,
     max_entries: usize,
+    active: bool,
+}
+
+impl Default for ListState {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            selected: 0,
+            max_entries: 0,
+            active: true,
+        }
+    }
 }
 
 impl ListState {
@@ -72,6 +83,15 @@ impl ListState {
 
     pub fn select(&mut self, index: usize) {
         self.selected = index;
+        self.active = true;
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.active = false;
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.active
     }
 }
 
@@ -234,6 +254,10 @@ impl DrawState<'_> {
     }
 
     fn index(&mut self) {
+        if !self.state.has_selection() {
+            self.draw("   ", Style::default());
+            return;
+        }
         if !self.show_numeric_shortcuts {
             let i = usize::conv(self.y) + self.state.offset;
             let is_selected = i == self.state.selected();
@@ -301,6 +325,7 @@ impl DrawState<'_> {
         let mut style = self.theme.as_style(Meaning::Base);
         let mut row_highlighted = false;
         if !self.alternate_highlight
+            && self.state.has_selection()
             && (usize::conv(self.y) + self.state.offset == self.state.selected)
         {
             row_highlighted = true;
@@ -430,6 +455,7 @@ impl DrawState<'_> {
         };
 
         if self.alternate_highlight
+            && self.state.has_selection()
             && (usize::conv(self.y) + self.state.offset == self.state.selected)
         {
             style = style.add_modifier(Modifier::REVERSED);

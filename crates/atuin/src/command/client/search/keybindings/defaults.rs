@@ -69,7 +69,10 @@ fn add_common_bindings(km: &mut Keymap) {
     km.bind(key("ctrl-o"), Action::ToggleTab);
 
     // Tab: always returns selection without executing (unlike Enter which respects enter_accept)
-    km.bind(key("tab"), Action::ReturnSelection);
+    km.bind_conditional(key("tab"), vec![
+        KeyRule::when(ConditionAtom::AutomaticInput, Action::CompleteInShell),
+        KeyRule::always(Action::ReturnSelection),
+    ]);
 }
 
 /// Returns `Accept` or `ReturnSelection` based on the `enter_accept` setting.
@@ -162,8 +165,12 @@ pub fn default_emacs_keymap(settings: &Settings, keys: &Keys) -> Keymap {
     }
 
     // --- Accept ---
-    km.bind(key("enter"), accept.clone());
-    km.bind(key("ctrl-m"), accept);
+    for enter in ["enter", "ctrl-m"] {
+        km.bind_conditional(key(enter), vec![
+            KeyRule::when(ConditionAtom::AutomaticInput, Action::SubmitQuery),
+            KeyRule::always(accept.clone()),
+        ]);
+    }
 
     // --- Copy ---
     km.bind(key("ctrl-y"), Action::Copy);
@@ -538,6 +545,7 @@ mod tests {
             original_input_empty: false,
             has_context: false,
             shell_up_key_binding: false,
+            automatic_input: false,
         }
     }
 
@@ -1094,6 +1102,7 @@ mod tests {
             original_input_empty: true,
             has_context: false,
             shell_up_key_binding: false,
+            automatic_input: false,
         };
         assert_eq!(
             set.emacs.resolve(&key("esc"), &ctx_original_empty),
@@ -1111,6 +1120,7 @@ mod tests {
             original_input_empty: false,
             has_context: false,
             shell_up_key_binding: false,
+            automatic_input: false,
         };
         assert_eq!(
             set.emacs.resolve(&key("esc"), &ctx_original_not_empty),

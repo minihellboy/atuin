@@ -51,6 +51,8 @@ pub enum Action {
     DeleteAll,
     ReturnOriginal,
     ReturnQuery,
+    SubmitQuery,
+    CompleteInShell,
     Exit,
     Redraw,
     CycleFilterMode,
@@ -137,6 +139,8 @@ impl Action {
             "delete-all" => Ok(Action::DeleteAll),
             "return-original" => Ok(Action::ReturnOriginal),
             "return-query" => Ok(Action::ReturnQuery),
+            "submit-query" => Ok(Action::SubmitQuery),
+            "complete-in-shell" => Ok(Action::CompleteInShell),
             "exit" => Ok(Action::Exit),
             "redraw" => Ok(Action::Redraw),
             "cycle-filter-mode" => Ok(Action::CycleFilterMode),
@@ -210,6 +214,8 @@ impl Action {
             Action::DeleteAll => "delete-all".to_string(),
             Action::ReturnOriginal => "return-original".to_string(),
             Action::ReturnQuery => "return-query".to_string(),
+            Action::SubmitQuery => "submit-query".to_string(),
+            Action::CompleteInShell => "complete-in-shell".to_string(),
             Action::Exit => "exit".to_string(),
             Action::Redraw => "redraw".to_string(),
             Action::CycleFilterMode => "cycle-filter-mode".to_string(),
@@ -269,6 +275,8 @@ mod tests {
     #[case::accept("accept", Action::Accept)]
     #[case::exit("exit", Action::Exit)]
     #[case::noop("noop", Action::Noop)]
+    #[case::submit_query("submit-query", Action::SubmitQuery)]
+    #[case::complete_in_shell("complete-in-shell", Action::CompleteInShell)]
     #[case::vim_enter_normal("vim-enter-normal", Action::VimEnterNormal)]
     #[case::accept_nth_1("accept-1", Action::AcceptNth(1))]
     #[case::accept_nth_9("accept-9", Action::AcceptNth(9))]
